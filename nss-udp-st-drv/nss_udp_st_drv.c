@@ -272,6 +272,8 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 			 */
 			nf_unregister_net_hooks(&init_net, nss_udp_st_nf_ipv4_ops, ARRAY_SIZE(nss_udp_st_nf_ipv4_ops));
 			nf_unregister_net_hooks(&init_net, nss_udp_st_nf_ipv6_ops, ARRAY_SIZE(nss_udp_st_nf_ipv6_ops));
+		} else {
+			nss_udp_st_hrtimer_cleanup();
 		}
 		nss_udp_st_clear_rules();
 		break;
@@ -343,7 +345,6 @@ reg_failed:
 static void __exit nss_udp_st_exit(void)
 {
 	nust.mode = NSS_UDP_ST_STOP;
-
 	device_destroy(dump_class, MKDEV(dump_major, 0));
 	class_destroy(dump_class);
 	unregister_chrdev(dump_major, DEVICE_NAME);

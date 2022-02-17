@@ -23,6 +23,11 @@
 #include <net/netfilter/nf_conntrack_core.h>
 #include "nss_udp_st_public.h"
 
+int tx_timer_flag;
+static ktime_t kt;
+static struct hrtimer tx_hr_timer;
+static enum hrtimer_restart tx_hr_restart = HRTIMER_NORESTART;
+
 /*
  * nss_udp_st_generate_ipv4_hdr()
  *	generate ipv4 header
@@ -123,7 +128,6 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 	skb = dev_alloc_skb(skb_sz);
 	if (!skb) {
 		atomic_long_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_MEMORY_FAILURE]);
-		pr_err("%px: Could not allocate a sk_buff of size(%zu).\n", ndev, skb_sz);
 		return;
 	}
 
@@ -171,7 +175,7 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 	 * tx packet
 	 */
 	skb->dev = ndev;
-	if (dev_queue_xmit(skb)) {
+	if (ndev->netdev_ops->ndo_start_xmit(skb, ndev) != NETDEV_TX_OK) {
 		kfree_skb(skb);
 		atomic_long_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_PACKET_DROP]);
 		return;
@@ -212,7 +216,7 @@ bool nss_udp_st_tx_valid(void)
  * nss_udp_st_tx_work_send_packets()
  *	generate and send packets per rule
  */
-static void nss_udp_st_tx_work_send_packets(struct work_struct *work)
+static void nss_udp_st_tx_work_send_packets(void)
 {
 	int i = 0;
 	struct nss_udp_st_rules *pos = NULL;
@@ -220,6 +224,7 @@ static void nss_udp_st_tx_work_send_packets(struct work_struct *work)
 
 	if (!nss_udp_st_tx_valid()  || nust.mode == NSS_UDP_ST_STOP ) {
 		dev_put(nust_dev);
+		tx_hr_restart = HRTIMER_NORESTART;
 		return;
 	}
 
@@ -230,12 +235,13 @@ static void nss_udp_st_tx_work_send_packets(struct work_struct *work)
 			 */
 			if (!nss_udp_st_tx_valid()  || nust.mode == NSS_UDP_ST_STOP ) {
 				dev_put(nust_dev);
+				tx_hr_restart = HRTIMER_NORESTART;
 				return;
 			}
 			nss_udp_st_tx_packets(nust_dev, pos);
 		}
 	}
-	queue_delayed_work(work_queue, &nss_udp_st_tx_delayed_work, NSS_UDP_ST_TX_DELAYED_PERIOD);
+	tx_hr_restart = HRTIMER_RESTART;
 }
 
 /*
@@ -258,16 +264,51 @@ static bool nss_udp_st_tx_init(void)
 	total_bps = (uint64_t)nust.config.rate * 1024 * 1024;
 
 	/*
-	 * calculate number of pkts to send per rule per 500 ms
+	 * calculate number of pkts to send per rule per 10 ms
 	 */
 	nss_udp_st_tx_num_pkt = total_bps / (nust.rule_count * (nust.config.buffer_sz + sizeof(struct ethhdr)) * 8 * NSS_UDP_ST_TX_TIMER);
 	nss_udp_st_tx_num_pkt ++;
-	pr_debug("total number of packets to tx every 500ms %llu\n",nss_udp_st_tx_num_pkt);
+	pr_debug("total number of packets to tx every 100ms %llu\n",nss_udp_st_tx_num_pkt);
 	if(!nss_udp_st_set_dev()) {
 		return false;
 	}
 
 	return true;
+}
+
+/*
+ * nss_udp_st_hrtimer_cleanup()
+ *	cancel hrtimer
+ */
+void nss_udp_st_hrtimer_cleanup(void)
+{
+	hrtimer_cancel(&tx_hr_timer);
+	tx_hr_restart = HRTIMER_NORESTART;
+}
+
+/*
+ * nss_udp_st_hrtimer_callback()
+ *	hrtimer callback function
+ */
+static enum hrtimer_restart nss_udp_st_hrtimer_callback(struct hrtimer *timer)
+{
+	nss_udp_st_tx_work_send_packets();
+	if(tx_hr_restart == HRTIMER_RESTART) {
+		hrtimer_forward_now(timer, kt);
+	}
+	return tx_hr_restart;
+}
+
+/*
+ * nss_udp_st_hrtimer_init()
+ *	initialize hrtimer
+ */
+void nss_udp_st_hrtimer_init(void)
+{
+	tx_hr_restart = HRTIMER_RESTART;
+	kt = ktime_set(0,10000000);
+	hrtimer_init(&tx_hr_timer, CLOCK_REALTIME, HRTIMER_MODE_ABS_HARD);
+	tx_hr_timer.function = &nss_udp_st_hrtimer_callback;
 }
 
 /*
@@ -280,8 +321,13 @@ bool nss_udp_st_tx(void)
 		return false;
 	}
 
-	work_queue = create_singlethread_workqueue("nss_udp_st_tx_work");
-	INIT_DELAYED_WORK(&nss_udp_st_tx_delayed_work, nss_udp_st_tx_work_send_packets);
-	queue_delayed_work(work_queue, &nss_udp_st_tx_delayed_work, NSS_UDP_ST_TX_DELAYED_PERIOD);
+	if (!tx_timer_flag) {
+		nss_udp_st_hrtimer_init();
+		hrtimer_start(&tx_hr_timer, kt, HRTIMER_MODE_ABS_HARD);
+		tx_timer_flag = 1;
+	} else {
+		hrtimer_restart(&tx_hr_timer);
+	}
+
 	return true;
 }

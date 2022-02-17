@@ -19,13 +19,14 @@
 #define __NSS_UDP_ST_TX_H
 
 #define NSS_UDP_ST_TX_DEFAULT_TIMEOUT	50	/* Default Tx test duration*/
-#define NSS_UDP_ST_TX_TIMER	2		/* To caluculate pkt per 500 ms*/
-#define NSS_UDP_ST_TX_DELAYED_PERIOD	msecs_to_jiffies(500)
+#define NSS_UDP_ST_TX_TIMER 100	/* To caluculate pkt per 10 ms*/
 #define NSS_UDP_ST_MIN_HEADROOM	32	/* Min headroom needed */
 #define NSS_UDP_ST_MIN_TAILROOM	32	/* Min tailroom needed */
 
 bool nss_udp_st_tx_valid(void);
 
 bool nss_udp_st_tx(void);
+
+void nss_udp_st_hrtimer_cleanup(void);
 
 #endif /*NSS_UDP_ST_TX_H*/
