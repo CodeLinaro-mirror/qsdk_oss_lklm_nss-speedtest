@@ -264,6 +264,9 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 		break;
 
 	case NSS_UDP_ST_IOCTL_STOP:
+		if (nust.mode == NSS_UDP_ST_STOP)
+			break;
+
 		nust.mode = NSS_UDP_ST_STOP;
 
 		if (nust.dir == NSS_UDP_ST_RX) {
