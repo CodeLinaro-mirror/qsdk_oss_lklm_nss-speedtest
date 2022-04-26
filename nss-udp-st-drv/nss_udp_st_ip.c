@@ -37,6 +37,9 @@
  */
 int nss_udp_st_get_ipaddr_ntoh(const char *arg, uint16_t data_sz, uint32_t *data)
 {
+
+	uint32_t dest[4];
+
 	if (!arg || !data) {
 		return -EINVAL;
 	}
@@ -55,10 +58,12 @@ int nss_udp_st_get_ipaddr_ntoh(const char *arg, uint16_t data_sz, uint32_t *data
 			return -EINVAL;
 		}
 
-		data[0] = ntohl(data[0]);
-		data[1] = ntohl(data[1]);
-		data[2] = ntohl(data[2]);
-		data[3] = ntohl(data[3]);
+		nss_udp_st_swap_addr_ipv6(data, dest);
+
+		data[0] = ntohl(dest[0]);
+		data[1] = ntohl(dest[1]);
+		data[2] = ntohl(dest[2]);
+		data[3] = ntohl(dest[3]);
 
 		return 0;
 
