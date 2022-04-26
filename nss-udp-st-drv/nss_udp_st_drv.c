@@ -221,7 +221,6 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 
 		nss_udp_st_reset_stats();
 		nust.dir = NSS_UDP_ST_TX;
-		nust.mode = NSS_UDP_ST_START;
 
 		ret = copy_from_user((void *)&(nust.time), (void __user *)arg, sizeof(nust.time));
 		if (ret) {
@@ -234,6 +233,7 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 			pr_err("Unable to start Tx test\n");
 			return -EINVAL;
 		}
+		nust.mode = NSS_UDP_ST_START;
 		break;
 
 	case NSS_UDP_ST_IOCTL_START_RX:
@@ -244,7 +244,6 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 
 		nss_udp_st_reset_stats();
 		nust.dir = NSS_UDP_ST_RX;
-		nust.mode = NSS_UDP_ST_START;
 
 		/*
 		 * register pre-routing hook for rx path
@@ -261,6 +260,7 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 			nf_unregister_net_hooks(&init_net, nss_udp_st_nf_ipv4_ops, ARRAY_SIZE(nss_udp_st_nf_ipv4_ops));
 			return -EINVAL;
 		}
+		nust.mode = NSS_UDP_ST_START;
 		break;
 
 	case NSS_UDP_ST_IOCTL_STOP:
