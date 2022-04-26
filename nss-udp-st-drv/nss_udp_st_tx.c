@@ -23,6 +23,7 @@
 #include <net/netfilter/nf_conntrack_core.h>
 #include <linux/if_vlan.h>
 #include <linux/if_pppox.h>
+#include <net/ip6_checksum.h>
 #include "nss_udp_st_public.h"
 
 int tx_timer_flag;
@@ -64,7 +65,7 @@ static inline void nss_udp_st_generate_ipv6_hdr(struct ipv6hdr *ipv6h, uint16_t 
 	ipv6h->version = 6;
 	memset(&ipv6h->flow_lbl, 0, sizeof(ipv6h->flow_lbl));
 	ipv6h->nexthdr = IPPROTO_UDP;
-	ipv6h->payload_len = htons(ip_len);
+	ipv6h->payload_len = htons(ip_len - sizeof(*ipv6h));
 	ipv6h->hop_limit = 64;
 	nss_udp_st_get_ipv6_addr_hton(rules->sip.ip.ipv6, addr.s6_addr32);
 	memcpy(ipv6h->saddr.s6_addr32, addr.s6_addr32, sizeof(ipv6h->saddr.s6_addr32));
@@ -78,11 +79,27 @@ static inline void nss_udp_st_generate_ipv6_hdr(struct ipv6hdr *ipv6h, uint16_t 
  */
 static void nss_udp_st_generate_udp_hdr(struct udphdr *uh, uint16_t udp_len, struct nss_udp_st_rules *rules)
 {
+
 	uh->source = htons(rules->sport);
 	uh->dest = htons(rules->dport);
 	uh->len = htons(udp_len);
-	uh->check = csum_tcpudp_magic(rules->sip.ip.ipv4, rules->dip.ip.ipv4, udp_len, IPPROTO_UDP,
+
+	if (rules->flags & NSS_UDP_ST_FLAG_IPV4) {
+		uh->check = csum_tcpudp_magic(rules->sip.ip.ipv4, rules->dip.ip.ipv4, udp_len, IPPROTO_UDP,
 		csum_partial(uh, udp_len, 0));
+	} else if (rules->flags & NSS_UDP_ST_FLAG_IPV6) {
+		struct in6_addr saddr;
+		struct in6_addr daddr;
+
+		nss_udp_st_get_ipv6_addr_hton(rules->sip.ip.ipv6, saddr.s6_addr32);
+		nss_udp_st_get_ipv6_addr_hton(rules->dip.ip.ipv6, daddr.s6_addr32);
+
+		uh->check = csum_ipv6_magic(&saddr, &daddr, udp_len, IPPROTO_UDP,
+		csum_partial(uh, udp_len, 0));
+	} else {
+		atomic_long_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_IP_VERSION]);
+		return;
+	}
 
 	if (uh->check == 0) {
 		uh->check = CSUM_MANGLED_0;
@@ -175,7 +192,16 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 
 	pkt_sz = nust.config.buffer_sz;
 	ip_len = pkt_sz;
-	udp_len = pkt_sz - sizeof(*iph);
+
+	if (rules->flags & NSS_UDP_ST_FLAG_IPV4) {
+		udp_len = pkt_sz - sizeof(*iph);
+	} else if (rules->flags & NSS_UDP_ST_FLAG_IPV6) {
+		udp_len = pkt_sz - sizeof(*ipv6h);
+	} else {
+		atomic_long_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_IP_VERSION]);
+		return;
+	}
+
 	skb_sz = NSS_UDP_ST_MIN_HEADROOM + pkt_sz + sizeof(struct ethhdr) + NSS_UDP_ST_MIN_TAILROOM + SMP_CACHE_BYTES;
 
 	skb = dev_alloc_skb(skb_sz);
@@ -203,19 +229,20 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 		skb_reset_network_header(skb);
 		iph = ip_hdr(skb);
 		nss_udp_st_generate_ipv4_hdr(iph, ip_len, rules);
+		data = skb_put(skb, pkt_sz - sizeof(*iph) - sizeof(*uh));
+		memset(data, 0, pkt_sz - sizeof(*iph) - sizeof(*uh));
 	} else if (rules->flags & NSS_UDP_ST_FLAG_IPV6) {
 		skb_push(skb, sizeof(*ipv6h));
 		skb_reset_network_header(skb);
 		ipv6h = ipv6_hdr(skb);
 		nss_udp_st_generate_ipv6_hdr(ipv6h, ip_len, rules);
+		data = skb_put(skb, pkt_sz - sizeof(*ipv6h) - sizeof(*uh));
+		memset(data, 0, pkt_sz - sizeof(*ipv6h) - sizeof(*uh));
 	} else {
 		atomic_long_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_IP_VERSION]);
 		kfree_skb(skb);
 		return;
 	}
-
-	data = skb_put(skb, pkt_sz - sizeof(*iph) - sizeof(*uh));
-	memset(data, 0, pkt_sz - sizeof(*iph) - sizeof(*uh));
 
 	switch (ndev->type) {
 	case ARPHRD_PPP:
