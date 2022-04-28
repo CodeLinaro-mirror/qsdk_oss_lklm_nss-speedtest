@@ -21,12 +21,17 @@
 #include <linux/hrtimer.h>
 #include <net/act_api.h>
 #include <net/netfilter/nf_conntrack_core.h>
+#include <linux/if_vlan.h>
+#include <linux/if_pppox.h>
 #include "nss_udp_st_public.h"
 
 int tx_timer_flag;
 static ktime_t kt;
 static struct hrtimer tx_hr_timer;
 static enum hrtimer_restart tx_hr_restart = HRTIMER_NORESTART;
+static struct vlan_hdr vh;
+static struct net_device *xmit_dev;
+static struct pppoe_opt info;
 
 /*
  * nss_udp_st_generate_ipv4_hdr()
@@ -88,18 +93,66 @@ static void nss_udp_st_generate_udp_hdr(struct udphdr *uh, uint16_t udp_len, str
  * nss_udp_st_generate_eth_hdr()
  *	generate L2 header
  */
-static inline void nss_udp_st_generate_eth_hdr(struct ethhdr *eh, struct sk_buff *skb, struct nss_udp_st_rules *rules, struct net_device *ndev)
+static inline void nss_udp_st_generate_eth_hdr(struct sk_buff *skb, uint8_t *src_mac, uint8_t *dst_mac)
 {
-	if (rules->flags & NSS_UDP_ST_FLAG_IPV4) {
-		eh->h_proto = htons(ETH_P_IP);
-		skb->protocol = htons(ETH_P_IP);
-	} else {
-		eh->h_proto = htons(ETH_P_IPV6);
-		skb->protocol = htons(ETH_P_IPV6);
-	}
+	struct ethhdr *eh = (struct ethhdr *)skb_push(skb, ETH_HLEN);
+	skb_reset_mac_header(skb);
 
-	memcpy(eh->h_source, ndev->dev_addr, ETH_ALEN);
-	memcpy(eh->h_dest, rules->dst_mac, ETH_ALEN);
+	eh->h_proto = skb->protocol;
+	memcpy(eh->h_source, src_mac, ETH_ALEN);
+	memcpy(eh->h_dest, dst_mac, ETH_ALEN);
+}
+
+/*
+ * nss_udp_st_generate_vlan_hdr
+ *	Generate VLAN header
+ */
+static void nss_udp_st_generate_vlan_hdr(struct sk_buff *skb, struct net_device *ndev)
+{
+	struct vlan_hdr *vhdr;
+
+	skb_push(skb, VLAN_HLEN);
+	vhdr = (struct vlan_hdr *)skb->data;
+	vhdr->h_vlan_TCI = htons(vh.h_vlan_TCI);
+	vhdr->h_vlan_encapsulated_proto = skb->protocol;
+	skb->protocol = htons(vh.h_vlan_encapsulated_proto);
+}
+
+/*
+ * nss_udp_st_generate_pppoe_hdr
+ *	Generate PPPoE header
+ */
+static void nss_udp_st_generate_pppoe_hdr(struct sk_buff *skb, uint16_t ppp_protocol)
+{
+	struct pppoe_hdr *ph;
+	unsigned char *pp;
+	unsigned int data_len;
+
+	/*
+	 * Insert the PPP header protocol
+	 */
+	pp = skb_push(skb, 2);
+	put_unaligned_be16(ppp_protocol, pp);
+
+	data_len = skb->len;
+
+	ph = (struct pppoe_hdr *)skb_push(skb, sizeof(*ph));
+	skb_reset_network_header(skb);
+
+	/*
+	 * Headers in skb will look like in below sequence
+	 *	| PPPoE hdr(6 bytes) | PPP hdr (2 bytes) | L3 hdr |
+	 *
+	 *	The length field in the PPPoE header indicates the length of the PPPoE payload which
+	 *	consists of a 2-byte PPP header plus a skb->len.
+	 */
+	ph->ver = 1;
+	ph->type = 1;
+	ph->code = 0;
+	ph->sid = (uint16_t)info.pa.sid;
+	ph->length = htons(data_len);
+
+	skb->protocol = htons(ETH_P_PPP_SES);
 }
 
 /*
@@ -112,13 +165,13 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 	struct udphdr *uh;
 	struct iphdr *iph;
 	struct ipv6hdr *ipv6h;
-	struct ethhdr *eh;
 	size_t align_offset;
 	size_t skb_sz;
 	size_t pkt_sz;
 	uint16_t ip_len;
 	uint16_t udp_len;
 	unsigned char *data;
+	uint16_t ppp_protocol;
 
 	pkt_sz = nust.config.buffer_sz;
 	ip_len = pkt_sz;
@@ -164,22 +217,57 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 	data = skb_put(skb, pkt_sz - sizeof(*iph) - sizeof(*uh));
 	memset(data, 0, pkt_sz - sizeof(*iph) - sizeof(*uh));
 
-	/*
-	 * populate ethernet header
-	 */
-	eh = (struct ethhdr *)skb_push(skb, ETH_HLEN);
-	skb_reset_mac_header(skb);
-	nss_udp_st_generate_eth_hdr(eh, skb, rules, ndev);
+	switch (ndev->type) {
+	case ARPHRD_PPP:
+		if (rules->flags & NSS_UDP_ST_FLAG_IPV4) {
+			ppp_protocol = PPP_IP;
+		} else {
+			ppp_protocol = PPP_IPV6;
+		}
+
+		nss_udp_st_generate_pppoe_hdr(skb, ppp_protocol);
+
+		if(is_vlan_dev(info.dev)) {
+			nss_udp_st_generate_vlan_hdr(skb, info.dev);
+		}
+
+		/*
+		 * populate ethernet header
+		 */
+		nss_udp_st_generate_eth_hdr(skb, xmit_dev->dev_addr, info.pa.remote);
+		break;
+
+	case ARPHRD_ETHER:
+		if (rules->flags & NSS_UDP_ST_FLAG_IPV4) {
+			skb->protocol = htons(ETH_P_IP);
+		} else {
+			skb->protocol = htons(ETH_P_IPV6);
+		}
+
+		if(is_vlan_dev(ndev)) {
+			nss_udp_st_generate_vlan_hdr(skb, ndev);
+		}
+
+		/*
+		 * populate ethernet header
+		 */
+		nss_udp_st_generate_eth_hdr(skb, xmit_dev->dev_addr, rules->dst_mac);
+		break;
+
+	default:
+		break;
+	}
 
 	/*
 	 * tx packet
 	 */
-	skb->dev = ndev;
-	if (ndev->netdev_ops->ndo_start_xmit(skb, ndev) != NETDEV_TX_OK) {
+	skb->dev = xmit_dev;
+	if (xmit_dev->netdev_ops->ndo_start_xmit(skb, xmit_dev) != NETDEV_TX_OK) {
 		kfree_skb(skb);
 		atomic_long_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_PACKET_DROP]);
 		return;
 	}
+
 	nss_udp_st_update_stats(ip_len + sizeof(struct ethhdr));
 }
 
@@ -213,6 +301,101 @@ bool nss_udp_st_tx_valid(void)
 }
 
 /*
+ * nss_udp_st_vlan_iface_config
+ *      Configure the WLAN interface as VLAN
+ */
+static int nss_udp_st_vlan_iface_config(struct net_device *dev)
+{
+        xmit_dev = vlan_dev_next_dev(dev);
+        if (!xmit_dev) {
+                pr_err("Cannot find the physical net device\n");
+                return -1;
+        }
+
+        if (is_vlan_dev(xmit_dev) || xmit_dev->type != ARPHRD_ETHER) {
+                pr_warn("%px: QinQ or non-ethernet VLAN master (%s) is not supported\n", dev,
+                                xmit_dev->name);
+                return -1;
+        }
+
+        vh.h_vlan_TCI = vlan_dev_vlan_id(dev);
+        vh.h_vlan_encapsulated_proto = ntohs(vlan_dev_vlan_proto(dev));
+
+        return 0;
+}
+
+/*
+ * nss_udp_st_pppoe_iface_config
+ *	Configure the WLAN interface as PPPoE
+ */
+static int nss_udp_st_pppoe_iface_config(struct net_device *dev)
+{
+	struct ppp_channel *ppp_chan[1];
+	int channel_count;
+	int channel_protocol;
+	int ret = 0;
+
+	/*
+	 * Gets the PPPoE channel information.
+	 */
+	channel_count = ppp_hold_channels(dev, ppp_chan, 1);
+	if (channel_count != 1) {
+		pr_warn("%px: Unable to get the channel for device: %s\n", dev, dev->name);
+		return -1;
+	}
+
+	channel_protocol = ppp_channel_get_protocol(ppp_chan[0]);
+	if (channel_protocol != PX_PROTO_OE) {
+		pr_warn("%px: PPP channel protocol is not PPPoE for device: %s\n", dev, dev->name);
+		ppp_release_channels(ppp_chan, 1);
+		return -1;
+	}
+
+	if (pppoe_channel_addressing_get(ppp_chan[0], &info)) {
+		pr_warn("%px: Unable to get the PPPoE session information for device: %s\n", dev, dev->name);
+		ppp_release_channels(ppp_chan, 1);
+		return -1;
+	}
+
+	/*
+	 * Check if the next device is a VLAN (eth0-eth0.100-pppoe-wan)
+	 */
+	if (is_vlan_dev(info.dev)) {
+		/*
+		 * Next device is a VLAN device (eth0.100)
+		 */
+		if (nss_udp_st_vlan_iface_config(info.dev) < 0) {
+			pr_warn("%px: Unable to get PPPoE's VLAN device's (%s) next dev\n", dev,
+ info.dev->name);
+			ret = -1;
+			goto fail;
+		}
+	} else {
+		/*
+		 * PPPoE interface can be created on linux bridge, OVS bridge and LAG devices.
+		 * udp_st doesn't support these hierarchies.
+		 */
+		if ((info.dev->priv_flags & (IFF_EBRIDGE | IFF_OPENVSWITCH))
+			|| ((info.dev->flags & IFF_MASTER) && (info.dev->priv_flags & IFF_BONDING))) {
+			pr_warn("%px: PPPoE over bridge and LAG interfaces are not supported, dev: %s info.dev: %s\n",dev, dev->name, info.dev->name);
+			ret = -1;
+			goto fail;
+
+		}
+
+		/*
+		 * PPPoE only (eth0-pppoe-wan)
+		 */
+		xmit_dev = info.dev;
+	}
+
+fail:
+	dev_put(info.dev);
+	ppp_release_channels(ppp_chan, 1);
+	return ret;
+}
+
+/*
  * nss_udp_st_tx_work_send_packets()
  *	generate and send packets per rule
  */
@@ -238,6 +421,7 @@ static void nss_udp_st_tx_work_send_packets(void)
 				tx_hr_restart = HRTIMER_NORESTART;
 				return;
 			}
+
 			nss_udp_st_tx_packets(nust_dev, pos);
 		}
 	}
@@ -320,6 +504,39 @@ bool nss_udp_st_tx(void)
 	if (!nss_udp_st_tx_init()) {
 		return false;
 	}
+
+	switch (nust_dev->type) {
+	case ARPHRD_PPP:
+		if(nss_udp_st_pppoe_iface_config(nust_dev) < 0) {
+			pr_err("Could not configure pppoe, dev: %s\n", nust_dev->name);
+			return false;
+		}
+		break;
+
+	case ARPHRD_ETHER:
+		if ((nust_dev->priv_flags & (IFF_EBRIDGE | IFF_OPENVSWITCH))
+			|| ((nust_dev->flags & IFF_MASTER) && (nust_dev->priv_flags & IFF_BONDING))) {
+			pr_err("Bridge and LAG interfaces are not supported, dev: %s\n", nust_dev->name);
+			return false;
+		}
+
+                if (is_vlan_dev(nust_dev)) {
+                        if (nss_udp_st_vlan_iface_config(nust_dev) < 0) {
+                                pr_err("Could not configure vlan, dev: %s\n", nust_dev->name);
+                                return false;
+                        }
+                } else {
+			xmit_dev = nust_dev;
+		}
+
+                break;
+
+        default:
+                pr_err("Unsupported speedtest interface: %s\n", nust_dev->name);
+		return false;
+        }
+
+	pr_debug("Speedtest interface: %s\n", nust_dev->name);
 
 	if (!tx_timer_flag) {
 		nss_udp_st_hrtimer_init();
