@@ -261,12 +261,22 @@ static int nss_udp_st_stats(void)
 
 	if (st_cfg.type == NSS_UDP_ST_TX) {
 		fp = fopen(NSS_UDP_ST_TX_STATS, "w");
+		if (!fp) {
+			printf("create/open file error\n");
+			return -EINVAL;
+		}
+
 		fprintf(fp, "\nPacket Stats\n");
 		fprintf(fp, "\ttx_packets = %lld packets\n",st_stat.p_stats.tx_packets);
 		fprintf(fp, "\ttx_bytes   = %lld bytes\n",st_stat.p_stats.tx_bytes);
 		bytes = st_stat.p_stats.tx_bytes;
 	} else if (st_cfg.type == NSS_UDP_ST_RX) {
 		fp = fopen(NSS_UDP_ST_RX_STATS, "w");
+		if (!fp) {
+			printf("create/open file error\n");
+			return -EINVAL;
+		}
+
 		fprintf(fp, "\nPacket Stats\n\n");
 		fprintf(fp, "\trx_packets = %lld packets\n",st_stat.p_stats.rx_packets);
 		fprintf(fp, "\trx_bytes   = %lld bytes\n",st_stat.p_stats.rx_bytes);
