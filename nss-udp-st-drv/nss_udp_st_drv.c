@@ -140,6 +140,7 @@ static ssize_t nss_udp_st_write(struct file *file, const char __user *buf,
 				size_t count, loff_t *ppos)
 {
 	int ret = 0;
+	int cpu = 0;
 	struct nss_udp_st_opt opt;
 	struct nss_udp_st_rules *rules;
 
@@ -162,6 +163,7 @@ static ssize_t nss_udp_st_write(struct file *file, const char __user *buf,
 		kfree(rules);
 		return -EINVAL;
 	}
+
 	rules->sport = opt.sport;
 	rules->dport = opt.dport;
 	if(opt.ip_version == 4) {
@@ -185,6 +187,16 @@ static ssize_t nss_udp_st_write(struct file *file, const char __user *buf,
 
 	rules->seq_greatest = 0;
 	rules->seq = 0;
+
+	if (nust.bitmap_curr == 0) {
+		nust.bitmap_curr = nust.config.cpu_bitmap;
+	}
+
+	cpu = ffs(nust.bitmap_curr);
+	cpu--;
+	nust.bitmap_curr &= ~(1 << cpu);
+	pr_debug("CPU: %d, nust_bitmap %u base: nust.config.cpu_bitmap %u ", cpu, nust.bitmap_curr, nust.config.cpu_bitmap);
+	rules->cpu = cpu;
 	list_add_tail(&(rules->list), &(nust.rules.list));
 	nust.rule_count++;
 	return 0;
@@ -208,6 +220,7 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 				unsigned long arg)
 {
 	int ret = 0;
+	int max_bitmap = 1;
 
 	switch (ioctl_num) {
 	case NSS_UDP_ST_IOCTL_INIT:
@@ -216,6 +229,14 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 		if (ret) {
 			return -EINVAL;
 		}
+
+		max_bitmap = (1 << NR_CPUS) - 1;
+		nust.bitmap_curr = nust.config.cpu_bitmap;
+		if (nust.bitmap_curr == 0 || nust.bitmap_curr > max_bitmap) {
+			pr_err("Incorrect bitmap: %u\n", nust.bitmap_curr);
+			return -EINVAL;
+		}
+
 		break;
 
 	case NSS_UDP_ST_IOCTL_START_TX:
@@ -235,11 +256,13 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 		if (!nust.time) {
 			nust.time = NSS_UDP_ST_TX_DEFAULT_TIMEOUT;
 		}
+
+		nust.mode = NSS_UDP_ST_START;
 		if (!nss_udp_st_tx()) {
+			nust.mode = NSS_UDP_ST_STOP;
 			pr_err("Unable to start Tx test\n");
 			return -EINVAL;
 		}
-		nust.mode = NSS_UDP_ST_START;
 		break;
 
 	case NSS_UDP_ST_IOCTL_START_RX:
