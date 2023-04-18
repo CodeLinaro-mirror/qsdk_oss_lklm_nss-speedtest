@@ -60,8 +60,8 @@ extern struct net_device *nust_dev;
  *  NSS UDP speedtest rules parameters
  */
 enum nss_udp_st_rule {
-	NSS_UDP_ST_SIP,	/* source IP */
-	NSS_UDP_ST_DIP,	/* destination IP */
+	NSS_UDP_ST_SIP,		/* source IP */
+	NSS_UDP_ST_DIP,		/* destination IP */
 	NSS_UDP_ST_SPORT,	/* source port */
 	NSS_UDP_ST_DPORT,	/* destination port */
 	NSS_UDP_ST_FLAGS,	/* IP version flag */
@@ -75,7 +75,7 @@ enum nss_udp_st_stats_time {
 	NSS_UDP_ST_STATS_TIME_START,	/* Start time of the test */
 	NSS_UDP_ST_STATS_TIME_CURRENT,	/* Current time of the running test */
 	NSS_UDP_ST_STATS_TIME_ELAPSED,	/* Elapsed time of the current test */
-	NSS_UDP_ST_STATS_TIME_MAX		/* Maximum timer statistics type */
+	NSS_UDP_ST_STATS_TIME_MAX	/* Maximum timer statistics type */
 };
 
 /*
@@ -86,9 +86,9 @@ enum nss_udp_st_error {
 	NSS_UDP_ST_ERROR_NONE,			/* no error */
 	NSS_UDP_ST_ERROR_INCORRECT_RATE,	/* incorrect rate */
 	NSS_UDP_ST_ERROR_INCORRECT_BUFFER_SIZE,	/* incorrect buffer size */
-	NSS_UDP_ST_ERROR_MEMORY_FAILURE,		/* Memory allocation failed */
+	NSS_UDP_ST_ERROR_MEMORY_FAILURE,	/* Memory allocation failed */
 	NSS_UDP_ST_ERROR_INCORRECT_IP_VERSION,	/* Incorrect IP version */
-	NSS_UDP_ST_ERROR_PACKET_DROP,	/* Packet Drop */
+	NSS_UDP_ST_ERROR_PACKET_DROP,		/* Packet Drop */
 	NSS_UDP_ST_ERROR_MAX			/* Maximum error statistics type */
 };
 
@@ -110,7 +110,9 @@ struct nss_udp_st_param {
 	uint32_t buffer_sz;	/* buffer size of each packet */
 	uint32_t dscp;		/* dscp flag for tx packet */
 	uint8_t ts_test;	/* timestamp flag */
-	char net_dev[NSS_UDP_ST_IFNAMSZ];	/* net device interface */
+	uint32_t cpu_bitmap;	/* CPU bitmap to be used */
+	char net_dev[NSS_UDP_ST_IFNAMSZ];
+				/* net device interface */
 };
 
 /*
@@ -120,7 +122,7 @@ struct nss_udp_st_param {
 struct nss_udp_st_opt {
 	uint16_t sport;			/* source port */
 	uint16_t dport;			/* destination port */
-	uint16_t ip_version;	/* ip version flag */
+	uint16_t ip_version;		/* ip version flag */
 	char sip[NSS_UDP_ST_IPNAMSZ];	/* source ip string */
 	char dip[NSS_UDP_ST_IPNAMSZ];	/* dest ip string */
 };
@@ -168,7 +170,7 @@ struct nss_udp_st_stats {
 	atomic64_t timer_stats[NSS_UDP_ST_STATS_TIME_MAX];	/* Time statistics */
 	atomic64_t errors[NSS_UDP_ST_ERROR_MAX];		/* Error statistics */
 	atomic64_t total_latency;				/* Total Latency */
-	bool first_pkt;					/* First packet flag */
+	bool first_pkt;						/* First packet flag */
 };
 
 /*
@@ -186,14 +188,15 @@ struct nss_udp_st_timestamp_info {
  */
 struct nss_udp_st_rules {
 	struct list_head list;		/* kernel’s list structure */
-	struct nss_udp_st_ip sip;		/* source ip */
-	struct nss_udp_st_ip dip;		/* dest ip */
+	struct nss_udp_st_ip sip;	/* source ip */
+	struct nss_udp_st_ip dip;	/* dest ip */
 	uint16_t sport;			/* source port */
 	uint16_t dport;			/* dest port */
 	uint16_t flags;			/* version of IP address */
-	uint8_t dst_mac[ETH_ALEN];		/* dest mac */
+	uint8_t dst_mac[ETH_ALEN];	/* dest mac */
 	uint64_t seq;			/* sequence counter */
 	uint64_t seq_greatest;		/* greatest pkt recieved */
+	uint8_t cpu;			/* CPU that this connection runs */
 };
 
 /*
@@ -206,6 +209,7 @@ struct nss_udp_st {
 	struct nss_udp_st_stats stats;	/* result statistics */
 	uint32_t rule_count;		/* no of rules configured */
 	uint32_t time;			/* duration of test */
+	uint32_t bitmap_curr;		/* temp variable to see assignment map */
 	bool mode;			/* start =0; stop=1 */
 	bool dir;			/* tx=0; rx=1 */
 };

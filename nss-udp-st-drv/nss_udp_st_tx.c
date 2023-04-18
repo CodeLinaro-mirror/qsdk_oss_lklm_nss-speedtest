@@ -27,13 +27,16 @@
 #include <net/ip6_checksum.h>
 #include "nss_udp_st_public.h"
 
-int tx_timer_flag;
+int tx_timer_flag[NR_CPUS];
 static ktime_t kt;
-static struct hrtimer tx_hr_timer;
-static enum hrtimer_restart tx_hr_restart = HRTIMER_NORESTART;
+static struct hrtimer tx_hr_timer[NR_CPUS];
+static enum hrtimer_restart tx_hr_restart[NR_CPUS] = {HRTIMER_NORESTART};
 static struct vlan_hdr vh;
 static struct net_device *xmit_dev;
 static struct pppoe_opt info;
+
+struct work_struct udp_st_work[NR_CPUS];	/* Work struct */
+struct workqueue_struct *udp_st_wq[NR_CPUS];	/* workqueue struct */
 
 /*
  * nss_udp_st_generate_ipv4_hdr()
@@ -196,7 +199,7 @@ static void nss_udp_st_add_seq_tstamp(struct sk_buff *skb, struct nss_udp_st_rul
  * nss_udp_st_tx_packets()
  *	allocate, populate and send tx packet
  */
-static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rules *rules)
+static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rules *rules, int cpu)
 {
 	struct sk_buff *skb;
 	struct udphdr *uh;
@@ -315,6 +318,7 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 	 * tx packet
 	 */
 	skb->dev = xmit_dev;
+	skb_set_queue_mapping(skb, cpu);
 	if (xmit_dev->netdev_ops->ndo_start_xmit(skb, xmit_dev) != NETDEV_TX_OK) {
 		kfree_skb(skb);
 		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_PACKET_DROP]);
@@ -335,6 +339,7 @@ static bool nss_udp_st_set_dev(void)
 		pr_err("Cannot find the net device\n");
 		return false;
 	}
+
 	return true;
 }
 
@@ -359,23 +364,24 @@ bool nss_udp_st_tx_valid(void)
  */
 static int nss_udp_st_vlan_iface_config(struct net_device *dev)
 {
-        xmit_dev = vlan_dev_next_dev(dev);
-        if (!xmit_dev) {
-                pr_err("Cannot find the physical net device\n");
-                return -1;
-        }
+	xmit_dev = vlan_dev_next_dev(dev);
+	if (!xmit_dev) {
+		pr_err("Cannot find the physical net device\n");
+		return -1;
+	}
 
-        if (is_vlan_dev(xmit_dev) || xmit_dev->type != ARPHRD_ETHER) {
-                pr_warn("%px: QinQ or non-ethernet VLAN master (%s) is not supported\n", dev,
-                                xmit_dev->name);
-                return -1;
-        }
+	if (is_vlan_dev(xmit_dev) || xmit_dev->type != ARPHRD_ETHER) {
+		pr_warn("%px: QinQ or non-ethernet VLAN master (%s) is not supported\n", dev,
+				xmit_dev->name);
+		return -1;
+	}
 
-        vh.h_vlan_TCI = vlan_dev_vlan_id(dev);
-        vh.h_vlan_encapsulated_proto = ntohs(vlan_dev_vlan_proto(dev));
+	vh.h_vlan_TCI = vlan_dev_vlan_id(dev);
+	vh.h_vlan_encapsulated_proto = ntohs(vlan_dev_vlan_proto(dev));
 
-        return 0;
+	return 0;
 }
+
 
 /*
  * nss_udp_st_pppoe_iface_config
@@ -451,8 +457,9 @@ fail:
 /*
  * nss_udp_st_tx_work_send_packets()
  *	generate and send packets per rule
+ *	must hold ref of the cpu before calling
  */
-static void nss_udp_st_tx_work_send_packets(void)
+static void nss_udp_st_tx_work_send_packets(int cpu)
 {
 	int i = 0;
 	struct nss_udp_st_rules *pos = NULL;
@@ -460,25 +467,32 @@ static void nss_udp_st_tx_work_send_packets(void)
 
 	if (!nss_udp_st_tx_valid()  || nust.mode == NSS_UDP_ST_STOP ) {
 		dev_put(nust_dev);
-		tx_hr_restart = HRTIMER_NORESTART;
+		tx_hr_restart[cpu] = HRTIMER_NORESTART;
+		put_cpu();
 		return;
 	}
 
 	list_for_each_entry_safe(pos, n, &nust.rules.list, list) {
+		if (pos->cpu != cpu) {
+			continue;
+		}
+
 		for (i = 0; i < nss_udp_st_tx_num_pkt; i++) {
 			/*
 			 * check if test time has elapsed or test has been stopped
 			 */
-			if (!nss_udp_st_tx_valid()  || nust.mode == NSS_UDP_ST_STOP ) {
+			if (!nss_udp_st_tx_valid() || nust.mode == NSS_UDP_ST_STOP ) {
 				dev_put(nust_dev);
-				tx_hr_restart = HRTIMER_NORESTART;
+				tx_hr_restart[cpu] = HRTIMER_NORESTART;
+				put_cpu();
 				return;
 			}
 
-			nss_udp_st_tx_packets(nust_dev, pos);
+			nss_udp_st_tx_packets(nust_dev, pos, cpu);
 		}
 	}
-	tx_hr_restart = HRTIMER_RESTART;
+	put_cpu();
+	tx_hr_restart[cpu] = HRTIMER_RESTART;
 }
 
 /*
@@ -519,8 +533,10 @@ static bool nss_udp_st_tx_init(void)
  */
 void nss_udp_st_hrtimer_cleanup(void)
 {
-	hrtimer_cancel(&tx_hr_timer);
-	tx_hr_restart = HRTIMER_NORESTART;
+	int cpu = get_cpu();
+	hrtimer_cancel(&tx_hr_timer[cpu]);
+	tx_hr_restart[cpu] = HRTIMER_NORESTART;
+	put_cpu();
 }
 
 /*
@@ -529,27 +545,43 @@ void nss_udp_st_hrtimer_cleanup(void)
  */
 static enum hrtimer_restart nss_udp_st_hrtimer_callback(struct hrtimer *timer)
 {
-	nss_udp_st_tx_work_send_packets();
-	if(tx_hr_restart == HRTIMER_RESTART) {
+	int cpu = get_cpu();
+
+	nss_udp_st_tx_work_send_packets(cpu);
+	if(tx_hr_restart[cpu] == HRTIMER_RESTART) {
 		hrtimer_forward_now(timer, kt);
 	}
-	return tx_hr_restart;
+	return tx_hr_restart[cpu];
 }
 
 /*
  * nss_udp_st_hrtimer_init()
  *	initialize hrtimer
  */
-void nss_udp_st_hrtimer_init(void)
+void nss_udp_st_hrtimer_init(struct hrtimer *hrt, int cpu)
 {
-	tx_hr_restart = HRTIMER_RESTART;
-	/*
-	 * Increasing interval by 1 second allows nss_udp_st_ioctl()
-	 * to complete before entering hrtimer callback for the first time
-	 */
-	kt = ktime_set(1,10000000);
-	hrtimer_init(&tx_hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	tx_hr_timer.function = &nss_udp_st_hrtimer_callback;
+	tx_hr_restart[cpu] = HRTIMER_RESTART;
+	kt = ktime_set(0,10000000);
+	hrtimer_init(hrt, CLOCK_REALTIME, HRTIMER_MODE_ABS_HARD);
+	hrt->function = &nss_udp_st_hrtimer_callback;
+}
+
+/*
+ * nss_udp_st_tx_wq_cb
+ *	Callback function used by the workqueue to start the hr timer
+ */
+static void nss_udp_st_tx_wq_cb(struct work_struct *usw)
+{
+	int cpu = get_cpu();
+	dev_hold(xmit_dev);
+	if (!tx_timer_flag[cpu]) {
+		nss_udp_st_hrtimer_init(&tx_hr_timer[cpu], cpu);
+		hrtimer_start(&tx_hr_timer[cpu], kt, HRTIMER_MODE_ABS_HARD);
+		tx_timer_flag[cpu] = 1;
+	} else {
+		hrtimer_restart(&tx_hr_timer[cpu]);
+	}
+	put_cpu();
 }
 
 /*
@@ -558,6 +590,9 @@ void nss_udp_st_hrtimer_init(void)
  */
 bool nss_udp_st_tx(void)
 {
+	uint32_t i;
+	char qname[7];
+
 	if (!nss_udp_st_tx_init()) {
 		return false;
 	}
@@ -577,31 +612,32 @@ bool nss_udp_st_tx(void)
 			return false;
 		}
 
-                if (is_vlan_dev(nust_dev)) {
-                        if (nss_udp_st_vlan_iface_config(nust_dev) < 0) {
-                                pr_err("Could not configure vlan, dev: %s\n", nust_dev->name);
-                                return false;
-                        }
-                } else {
+		if (is_vlan_dev(nust_dev)) {
+			if (nss_udp_st_vlan_iface_config(nust_dev) < 0) {
+				pr_err("Could not configure vlan, dev: %s\n", nust_dev->name);
+				return false;
+			}
+		} else {
 			xmit_dev = nust_dev;
 		}
 
-                break;
+		break;
 
-        default:
-                pr_err("Unsupported speedtest interface: %s\n", nust_dev->name);
+	default:
+		pr_err("Unsupported speedtest interface: %s\n", nust_dev->name);
 		return false;
-        }
+	}
 
 	pr_debug("Speedtest interface: %s\n", nust_dev->name);
 
-	if (!tx_timer_flag) {
-		nss_udp_st_hrtimer_init();
-		hrtimer_start(&tx_hr_timer, kt, HRTIMER_MODE_REL);
-		kt = ktime_set(0,10000000);
-		tx_timer_flag = 1;
-	} else {
-		hrtimer_restart(&tx_hr_timer);
+	for (i = 0; i < NR_CPUS; i++) {
+		if (!tx_timer_flag[i]) {
+			strlcpy(qname, "udp_st", 7);
+			snprintf(qname + 6, sizeof(uint32_t), "%u", i + 1);
+			udp_st_wq[i] = create_workqueue(qname);
+			INIT_WORK(&udp_st_work[i], nss_udp_st_tx_wq_cb);
+		}
+		queue_work_on(i, udp_st_wq[i], &udp_st_work[i]);
 	}
 
 	return true;

@@ -46,6 +46,7 @@ struct option long_options[] =
 	{"dscp", required_argument, NULL, 'c'},
 	{"timestamp", no_argument, NULL, '0'},
 	{"help", no_argument, NULL, 'h'},
+	{"cpu_bitmap", required_argument, NULL, 'u'},
 	{0, 0, 0, 0}
 };
 
@@ -350,7 +351,7 @@ static int nss_udp_st_get_opt(int args, char **argv)
 	int option_index = 0;
 
 	while (1) {
-		c = getopt_long_only(args, argv, "m:x:s:d:y:z:n:f:t:r:b:c:0",
+		c = getopt_long_only(args, argv, "m:x:s:d:y:z:n:f:t:r:b:c:0:u",
 			long_options, &option_index);
 		if (c == -1)
 			break;
@@ -418,7 +419,9 @@ static int nss_udp_st_get_opt(int args, char **argv)
 		case 'h':
 			nss_udp_st_usage();
 			break;
-
+		case 'u':
+			st_param.cpu_bitmap = atoi(optarg);
+			break;
 		default:
 			nss_udp_st_usage();
 			return -EINVAL;
