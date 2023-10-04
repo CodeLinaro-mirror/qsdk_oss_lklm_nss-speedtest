@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -110,7 +110,7 @@ static void nss_udp_st_generate_udp_hdr(struct udphdr *uh, uint16_t udp_len, str
  * nss_udp_st_generate_eth_hdr()
  *	generate L2 header
  */
-static inline void nss_udp_st_generate_eth_hdr(struct sk_buff *skb, uint8_t *src_mac, uint8_t *dst_mac)
+static inline void nss_udp_st_generate_eth_hdr(struct sk_buff *skb, const uint8_t *src_mac, uint8_t *dst_mac)
 {
 	struct ethhdr *eh = (struct ethhdr *)skb_push(skb, ETH_HLEN);
 	skb_reset_mac_header(skb);
