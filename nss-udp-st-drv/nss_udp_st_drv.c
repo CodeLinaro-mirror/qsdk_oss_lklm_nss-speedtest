@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -18,6 +18,7 @@
 
 #include <net/act_api.h>
 #include <linux/major.h>
+#include <linux/version.h>
 #include <net/netfilter/nf_conntrack_core.h>
 #include "nss_udp_st_public.h"
 
@@ -318,8 +319,11 @@ static int __init nss_udp_st_init(void)
 		pr_err("Unable to allocate a major number err = %d\n", ret);
 		goto reg_failed;
 	}
-
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0))
 	dump_class = class_create(THIS_MODULE, CLASS_NAME);
+#else
+	dump_class = class_create(CLASS_NAME);
+#endif
 	if (IS_ERR(dump_class)) {
 		ret = PTR_ERR(dump_class);
 		pr_err("Unable to create dump class = %d\n", ret);
