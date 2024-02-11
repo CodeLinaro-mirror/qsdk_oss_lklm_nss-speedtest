@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -19,6 +19,7 @@
 #include <linux/list.h>
 #include <linux/string.h>
 #include <linux/hrtimer.h>
+#include <linux/math64.h>
 #include <net/act_api.h>
 #include <net/netfilter/nf_conntrack_core.h>
 #include <linux/if_vlan.h>
@@ -477,7 +478,7 @@ static bool nss_udp_st_tx_init(void)
 	/*
 	 * calculate number of pkts to send per rule per 10 ms
 	 */
-	nss_udp_st_tx_num_pkt = total_bps / (nust.rule_count * (nust.config.buffer_sz + sizeof(struct ethhdr)) * 8 * NSS_UDP_ST_TX_TIMER);
+	nss_udp_st_tx_num_pkt = div_u64(total_bps , (nust.rule_count * (nust.config.buffer_sz + sizeof(struct ethhdr)) * 8 * NSS_UDP_ST_TX_TIMER));
 	nss_udp_st_tx_num_pkt ++;
 	pr_debug("total number of packets to tx every 100ms %llu\n",nss_udp_st_tx_num_pkt);
 	if(!nss_udp_st_set_dev()) {

@@ -19,6 +19,7 @@
 #include <net/act_api.h>
 #include <linux/major.h>
 #include <linux/version.h>
+#include <linux/math64.h>
 #include <net/netfilter/nf_conntrack_core.h>
 #include "nss_udp_st_public.h"
 
@@ -368,7 +369,7 @@ void nss_udp_st_update_stats(size_t pkt_size)
 	long time_start;
 
 	if (nust.stats.first_pkt) {
-		atomic_long_set(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_START], (jiffies * 1000/HZ));
+		atomic_long_set(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_START], (jiffies * div_u64(1000,HZ)));
 		nust.stats.first_pkt = false;
 	}
 
@@ -382,7 +383,7 @@ void nss_udp_st_update_stats(size_t pkt_size)
 		atomic_long_add(pkt_size, &nust.stats.p_stats.rx_bytes);
 	}
 
-	atomic_long_set(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_CURRENT], (jiffies * 1000/HZ));
+	atomic_long_set(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_CURRENT], (jiffies * div_u64(1000,HZ)));
 
 	time_curr = atomic_long_read(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_CURRENT]);
 	time_start = atomic_long_read(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_START]);
