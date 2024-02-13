@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -18,11 +18,7 @@
 
 #include <net/act_api.h>
 #include <linux/major.h>
-<<<<<<< HEAD   (84adf0 nss-udp-st: Fixed compilation errors due to kernel 6.1 upgra)
-=======
-#include <linux/version.h>
 #include <linux/math64.h>
->>>>>>> CHANGE (a77bdb nss-udp-st: Fixed compilation errors on 32bit 512Open profil)
 #include <net/netfilter/nf_conntrack_core.h>
 #include "nss_udp_st_public.h"
 
