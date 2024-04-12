@@ -151,7 +151,7 @@ static ssize_t nss_udp_st_write(struct file *file, const char __user *buf,
 
 	rules = (struct nss_udp_st_rules *)kzalloc(sizeof(struct nss_udp_st_rules), GFP_KERNEL);
 	if (!rules) {
-		atomic_long_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_MEMORY_FAILURE]);
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_MEMORY_FAILURE]);
 		return -EINVAL;
 	}
 
@@ -364,25 +364,25 @@ void nss_udp_st_update_stats(size_t pkt_size)
 	long time_start;
 
 	if (nust.stats.first_pkt) {
-		atomic_long_set(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_START], (jiffies * 1000/HZ));
+		atomic64_set(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_START], (jiffies * div_u64(1000,HZ)));
 		nust.stats.first_pkt = false;
 	}
 
 	if (nust.dir == NSS_UDP_ST_TX) {
-		atomic_long_inc(&nust.stats.p_stats.tx_packets);
-		atomic_long_add(pkt_size, &nust.stats.p_stats.tx_bytes);
+		atomic64_inc(&nust.stats.p_stats.tx_packets);
+		atomic64_add(pkt_size, &nust.stats.p_stats.tx_bytes);
 	}
 
 	if (nust.dir == NSS_UDP_ST_RX) {
-		atomic_long_inc(&nust.stats.p_stats.rx_packets);
-		atomic_long_add(pkt_size, &nust.stats.p_stats.rx_bytes);
+		atomic64_inc(&nust.stats.p_stats.rx_packets);
+		atomic64_add(pkt_size, &nust.stats.p_stats.rx_bytes);
 	}
 
-	atomic_long_set(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_CURRENT], (jiffies * 1000/HZ));
+	atomic64_set(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_CURRENT], (jiffies * div_u64(1000,HZ)));
 
-	time_curr = atomic_long_read(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_CURRENT]);
-	time_start = atomic_long_read(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_START]);
-	atomic_long_set(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_ELAPSED], (long)(time_curr - time_start));
+	time_curr = atomic64_read(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_CURRENT]);
+	time_start = atomic64_read(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_START]);
+	atomic64_set(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_ELAPSED], (long)(time_curr - time_start));
 }
 
 module_init(nss_udp_st_init);
