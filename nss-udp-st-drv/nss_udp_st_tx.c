@@ -518,8 +518,12 @@ static enum hrtimer_restart nss_udp_st_hrtimer_callback(struct hrtimer *timer)
 void nss_udp_st_hrtimer_init(void)
 {
 	tx_hr_restart = HRTIMER_RESTART;
-	kt = ktime_set(0,10000000);
-	hrtimer_init(&tx_hr_timer, CLOCK_REALTIME, HRTIMER_MODE_ABS_HARD);
+	/*
+	 * Increasing interval by 1 second allows nss_udp_st_ioctl()
+	 * to complete before entering hrtimer callback for the first time
+	 */
+	kt = ktime_set(1,10000000);
+	hrtimer_init(&tx_hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	tx_hr_timer.function = &nss_udp_st_hrtimer_callback;
 }
 
@@ -568,7 +572,8 @@ bool nss_udp_st_tx(void)
 
 	if (!tx_timer_flag) {
 		nss_udp_st_hrtimer_init();
-		hrtimer_start(&tx_hr_timer, kt, HRTIMER_MODE_ABS_HARD);
+		hrtimer_start(&tx_hr_timer, kt, HRTIMER_MODE_REL);
+		kt = ktime_set(0,10000000);
 		tx_timer_flag = 1;
 	} else {
 		hrtimer_restart(&tx_hr_timer);

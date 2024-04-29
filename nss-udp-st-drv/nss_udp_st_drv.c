@@ -225,6 +225,7 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 		nss_udp_st_reset_stats();
 		nust.dir = NSS_UDP_ST_TX;
 
+		memset(&(nust.time), 0, sizeof(nust.time));
 		ret = copy_from_user((void *)&(nust.time), (void __user *)arg, sizeof(nust.time));
 		if (ret) {
 			return -EINVAL;
