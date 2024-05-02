@@ -23,6 +23,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -58,6 +59,8 @@ struct nss_udp_st_pkt_stats {
 	atomic_llong tx_bytes;		/* Number of bytes transmitted */
 	atomic_llong rx_packets;	/* Number of packets received */
 	atomic_llong rx_bytes;		/* Number of bytes received */
+	atomic_llong ooo;			/* Out of order packets */
+	atomic_llong dropped;		/* Dropped packets */
 };
 
 /*
@@ -68,6 +71,7 @@ struct nss_udp_st_stat {
 	struct nss_udp_st_pkt_stats p_stats;				/* Packet statistics */
 	atomic_llong timer_stats[NSS_UDP_ST_STATS_TIME_MAX];	/* Time statistics */
 	atomic_llong errors[NSS_UDP_ST_ERROR_MAX];				/* Error statistics */
+	atomic_llong total_latency;				/* Total Latency */
 	bool first_pkt;						/* First packet flag */
 };
 

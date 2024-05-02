@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022, 2024 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -44,6 +44,7 @@ struct option long_options[] =
 	{"rate", required_argument, NULL, 'r'},
 	{"buffer_sz", required_argument, NULL, 'b'},
 	{"dscp", required_argument, NULL, 'c'},
+	{"timestamp", no_argument, NULL, '0'},
 	{"help", no_argument, NULL, 'h'},
 	{0, 0, 0, 0}
 };
@@ -308,6 +309,17 @@ static int nss_udp_st_stats(void)
 	fprintf(fp, "\nThroughput Stats\n");
 	fprintf(fp, "\tthroughput  = %lld Mbps\n",
 		(bytes * 8)/(st_stat.timer_stats[NSS_UDP_ST_STATS_TIME_ELAPSED] * 1000));
+
+	if (st_cfg.type == NSS_UDP_ST_RX) {
+		fprintf(fp, "\nLatency Stats\n");
+		fprintf(fp, "\taverage latency  = %lld ms\n",
+			(st_stat.total_latency / 1000000) / st_stat.p_stats.rx_packets);
+		fprintf(fp, "\tdropped packets  = %lld pkts\n",
+			st_stat.p_stats.dropped);
+		fprintf(fp, "\tout of order packets  = %lld pkts\n",
+			st_stat.p_stats.ooo);
+	}
+
 	fclose(fp);
 	return 0;
 }
@@ -320,7 +332,7 @@ static void nss_udp_st_usage(void)
 {
 	printf("\nUsage:");
 	printf("\n./nss_udp_st --mode <init> --rate <rate in Mbps> \
-		--buffer_sz <buffer_size in bytes> --dscp <dscp> --net_dev <net_dev>");
+		--buffer_sz <buffer_size in bytes> --dscp <dscp> --net_dev <net_dev> --timestamp");
 	printf("\n./nss_udp_st --mode <create> --sip <sip> --dip <dip> \
 		--sport <sport> --dport <dport> --version <4/6>");
 	printf("\n./nss_udp_st --mode <start> --type <tx/rx> --time <time in seconds>");
@@ -338,7 +350,7 @@ static int nss_udp_st_get_opt(int args, char **argv)
 	int option_index = 0;
 
 	while (1) {
-		c = getopt_long_only(args, argv, "m:x:s:d:y:z:n:f:t:r:b:c",
+		c = getopt_long_only(args, argv, "m:x:s:d:y:z:n:f:t:r:b:c:0",
 			long_options, &option_index);
 		if (c == -1)
 			break;
@@ -397,6 +409,10 @@ static int nss_udp_st_get_opt(int args, char **argv)
 
 		case 'c':
 			st_param.dscp = atoi(optarg);
+			break;
+
+		case '0':
+			st_param.ts_test = 1;
 			break;
 
 		case 'h':

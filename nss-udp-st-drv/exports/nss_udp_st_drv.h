@@ -42,10 +42,10 @@
 #define NSS_UDP_ST_DEV	"/dev/nss_udp_st"
 
 #ifdef __KERNEL__ /* only kernel will use. */
-#define NSS_UDP_ST_MAX_HEADROOM	32	/* Maximum headroom needed */
-#define NSS_UDP_ST_MAX_TAILROOM	32	/* Maximum tailroom needed */
-#define NSS_UDP_ST_BUFFER_SIZE_MAX	1500	/* 1500 bytes */
-#define NSS_UDP_ST_RATE_MAX	20000000000	/* 20 Gbps */
+#define NSS_UDP_ST_MAX_HEADROOM 32	/* Maximum headroom needed */
+#define NSS_UDP_ST_MAX_TAILROOM 32	/* Maximum tailroom needed */
+#define NSS_UDP_ST_BUFFER_SIZE_MAX 1500	/* 1500 bytes */
+#define NSS_UDP_ST_RATE_MAX 20000000000	/* 20 Gbps */
 
 extern struct nss_udp_st nust;
 extern struct delayed_work nss_udp_st_tx_delayed_work;
@@ -109,6 +109,7 @@ struct nss_udp_st_param {
 	uint32_t rate;		/* target rate in Mbps */
 	uint32_t buffer_sz;	/* buffer size of each packet */
 	uint32_t dscp;		/* dscp flag for tx packet */
+	uint8_t ts_test;	/* timestamp flag */
 	char net_dev[NSS_UDP_ST_IFNAMSZ];	/* net device interface */
 };
 
@@ -151,10 +152,13 @@ struct nss_udp_st_ip {
  */
 struct nss_udp_st_pkt_stats {
 	atomic64_t tx_packets;	/* Number of packets transmitted */
-	atomic64_t tx_bytes;	/* Number of bytes transmitted */
+	atomic64_t tx_bytes;		/* Number of bytes transmitted */
 	atomic64_t rx_packets;	/* Number of packets received */
-	atomic64_t rx_bytes;	/* Number of bytes received */
+	atomic64_t rx_bytes;		/* Number of bytes received */
+	atomic64_t ooo;			/* Out of order packets */
+	atomic64_t dropped;		/* Dropped packets */
 };
+
 /*
  * nss_udp_st_stats
  *	stats for tx/rx test
@@ -163,7 +167,17 @@ struct nss_udp_st_stats {
 	struct nss_udp_st_pkt_stats p_stats;			/* Packet statistics */
 	atomic64_t timer_stats[NSS_UDP_ST_STATS_TIME_MAX];	/* Time statistics */
 	atomic64_t errors[NSS_UDP_ST_ERROR_MAX];		/* Error statistics */
+	atomic64_t total_latency;				/* Total Latency */
 	bool first_pkt;					/* First packet flag */
+};
+
+/*
+ * nss_udp_st_timestamp_info
+ *	contents of payload during timestamp test
+ */
+struct nss_udp_st_timestamp_info {
+	uint64_t seq;		/* sequence number assigned to pkt by tx driver */
+	uint64_t timestamp;	/* timestamp assigned to pkt by tx driver */
 };
 
 /*
@@ -178,6 +192,8 @@ struct nss_udp_st_rules {
 	uint16_t dport;			/* dest port */
 	uint16_t flags;			/* version of IP address */
 	uint8_t dst_mac[ETH_ALEN];		/* dest mac */
+	uint64_t seq;			/* sequence counter */
+	uint64_t seq_greatest;		/* greatest pkt recieved */
 };
 
 /*
