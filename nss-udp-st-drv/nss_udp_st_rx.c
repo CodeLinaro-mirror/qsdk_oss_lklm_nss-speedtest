@@ -21,6 +21,51 @@
 #include "nss_udp_st_public.h"
 
 /*
+ * nss_udp_st_seq_check()
+ *      checks for potential dropped or OOO pkts
+ */
+static void nss_udp_st_seq_check(struct nss_udp_st_rules *rule, uint64_t seq)
+{
+	if (seq > rule->seq_greatest) {
+		if (seq != rule->seq_greatest + 1)
+			atomic64_add(rule->seq_greatest - seq, &nust.stats.p_stats.dropped);
+		rule->seq_greatest = seq;
+	} else if (seq < rule->seq_greatest) {
+		atomic64_sub(1, &nust.stats.p_stats.dropped);
+		atomic64_inc(&nust.stats.p_stats.ooo);
+	}
+}
+
+/*
+ * nss_udp_st_process_payload()
+ *      will process the items from skb payload
+ */
+static void nss_udp_st_process_payload(struct sk_buff *skb, struct nss_udp_st_rules *rule, uint8_t ip_version)
+{
+        uint64_t time;
+	uint64_t latency;
+	uint16_t hdr_sz;
+	struct nss_udp_st_timestamp_info *ts_info;
+
+        time = ktime_get_real_ns();
+	if (ip_version == NSS_UDP_ST_FLAG_IPV4) {
+		hdr_sz = sizeof(struct iphdr);
+	} else if (ip_version == NSS_UDP_ST_FLAG_IPV6) {
+		hdr_sz = sizeof(struct ipv6hdr);
+	} else {
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_IP_VERSION]);
+		return;
+	}
+	hdr_sz += sizeof(struct udphdr);
+
+	ts_info = (struct nss_udp_st_timestamp_info *)skb_pull(skb, hdr_sz);
+	do_div(time, 1000000);
+	latency = time - ts_info->timestamp;
+	atomic64_add(latency, &nust.stats.total_latency);
+	nss_udp_st_seq_check(rule, ts_info->seq);
+}
+
+/*
  * nss_udp_st_rx_ipv4_pre_routing_hook()
  *	pre-routing hook into netfilter packet monitoring point for IPv4
  */
@@ -28,7 +73,7 @@ unsigned int nss_udp_st_rx_ipv4_pre_routing_hook(void *priv, struct sk_buff *skb
 {
 	struct udphdr *uh;
 	struct iphdr *iph;
-	struct nss_udp_st_rules *rules = NULL;
+	struct nss_udp_st_rules *rule = NULL;
 	struct nss_udp_st_rules *n = NULL;
 
 	iph = (struct iphdr *)skb_network_header(skb);
@@ -42,16 +87,19 @@ unsigned int nss_udp_st_rx_ipv4_pre_routing_hook(void *priv, struct sk_buff *skb
 
 	uh = (struct udphdr *)skb_transport_header(skb);
 
-	list_for_each_entry_safe(rules, n, &nust.rules.list, list) {
+	list_for_each_entry_safe(rule, n, &nust.rules.list, list) {
 		/*
 		 * If incoming packet matches 5tuple, it is a speedtest packet.
 		 * Increase Rx packet stats and drop packet.
 		 */
-		if ((rules->flags & NSS_UDP_ST_FLAG_IPV4) &&
-			(rules->sip.ip.ipv4 == ntohl(iph->daddr)) &&
-			(rules->dip.ip.ipv4 == ntohl(iph->saddr)) &&
-			(rules->sport == ntohs(uh->dest)) &&
-			(rules->dport == ntohs(uh->source)) ) {
+		if ((rule->flags & NSS_UDP_ST_FLAG_IPV4) &&
+			(rule->sip.ip.ipv4 == ntohl(iph->daddr)) &&
+			(rule->dip.ip.ipv4 == ntohl(iph->saddr)) &&
+			(rule->sport == ntohs(uh->dest)) &&
+			(rule->dport == ntohs(uh->source)) ) {
+				if (nust.config.ts_test) {
+					nss_udp_st_process_payload(skb, rule, NSS_UDP_ST_FLAG_IPV4);
+				}
 				nss_udp_st_update_stats(ntohs(iph->tot_len) + sizeof(struct ethhdr));
 				kfree_skb(skb);
 				return NF_STOLEN;
@@ -70,7 +118,7 @@ unsigned int nss_udp_st_rx_ipv6_pre_routing_hook(void *priv, struct sk_buff *skb
 	struct ipv6hdr *iph;
 	struct in6_addr saddr;
 	struct in6_addr daddr;
-	struct nss_udp_st_rules *rules = NULL;
+	struct nss_udp_st_rules *rule = NULL;
 	struct nss_udp_st_rules *n = NULL;
 
 	iph = (struct ipv6hdr *)skb_network_header(skb);
@@ -87,17 +135,20 @@ unsigned int nss_udp_st_rx_ipv6_pre_routing_hook(void *priv, struct sk_buff *skb
 	nss_udp_st_get_ipv6_addr_ntoh(iph->saddr.s6_addr32, saddr.s6_addr32);
 	nss_udp_st_get_ipv6_addr_ntoh(iph->daddr.s6_addr32, daddr.s6_addr32);
 
-	list_for_each_entry_safe(rules, n, &nust.rules.list, list) {
+	list_for_each_entry_safe(rule, n, &nust.rules.list, list) {
 
 		/*
 		 * If incoming packet matches 5tuple, it is a speedtest packet.
 		 * Increase Rx packet stats and drop packet.
 		 */
-		if ((rules->flags & NSS_UDP_ST_FLAG_IPV6) &&
-			(nss_udp_st_compare_ipv6(rules->sip.ip.ipv6, daddr.s6_addr32)) &&
-			(nss_udp_st_compare_ipv6(rules->dip.ip.ipv6, saddr.s6_addr32)) &&
-			(rules->sport == ntohs(uh->dest)) &&
-			(rules->dport == ntohs(uh->source))) {
+		if ((rule->flags & NSS_UDP_ST_FLAG_IPV6) &&
+			(nss_udp_st_compare_ipv6(rule->sip.ip.ipv6, daddr.s6_addr32)) &&
+			(nss_udp_st_compare_ipv6(rule->dip.ip.ipv6, saddr.s6_addr32)) &&
+			(rule->sport == ntohs(uh->dest)) &&
+			(rule->dport == ntohs(uh->source))) {
+				if (nust.config.ts_test) {
+					nss_udp_st_process_payload(skb, rule, NSS_UDP_ST_FLAG_IPV6);
+				}
 				nss_udp_st_update_stats(ntohs(iph->payload_len) + sizeof(struct ethhdr));
 				kfree_skb(skb);
 				return NF_STOLEN;

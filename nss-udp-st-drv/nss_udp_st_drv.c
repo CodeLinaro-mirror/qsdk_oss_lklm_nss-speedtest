@@ -183,6 +183,8 @@ static ssize_t nss_udp_st_write(struct file *file, const char __user *buf,
 		return -EINVAL;
 	}
 
+	rules->seq_greatest = 0;
+	rules->seq = 0;
 	list_add_tail(&(rules->list), &(nust.rules.list));
 	nust.rule_count++;
 	return 0;
