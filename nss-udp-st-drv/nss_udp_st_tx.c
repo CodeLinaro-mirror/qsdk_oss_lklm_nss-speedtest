@@ -97,7 +97,7 @@ static void nss_udp_st_generate_udp_hdr(struct udphdr *uh, uint16_t udp_len, str
 		uh->check = csum_ipv6_magic(&saddr, &daddr, udp_len, IPPROTO_UDP,
 		csum_partial(uh, udp_len, 0));
 	} else {
-		atomic_long_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_IP_VERSION]);
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_IP_VERSION]);
 		return;
 	}
 
@@ -198,7 +198,7 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 	} else if (rules->flags & NSS_UDP_ST_FLAG_IPV6) {
 		udp_len = pkt_sz - sizeof(*ipv6h);
 	} else {
-		atomic_long_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_IP_VERSION]);
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_IP_VERSION]);
 		return;
 	}
 
@@ -206,7 +206,7 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 
 	skb = dev_alloc_skb(skb_sz);
 	if (!skb) {
-		atomic_long_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_MEMORY_FAILURE]);
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_MEMORY_FAILURE]);
 		return;
 	}
 
@@ -239,7 +239,7 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 		data = skb_put(skb, pkt_sz - sizeof(*ipv6h) - sizeof(*uh));
 		memset(data, 0, pkt_sz - sizeof(*ipv6h) - sizeof(*uh));
 	} else {
-		atomic_long_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_IP_VERSION]);
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_IP_VERSION]);
 		kfree_skb(skb);
 		return;
 	}
@@ -291,7 +291,7 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 	skb->dev = xmit_dev;
 	if (xmit_dev->netdev_ops->ndo_start_xmit(skb, xmit_dev) != NETDEV_TX_OK) {
 		kfree_skb(skb);
-		atomic_long_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_PACKET_DROP]);
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_PACKET_DROP]);
 		return;
 	}
 
@@ -318,7 +318,7 @@ static bool nss_udp_st_set_dev(void)
  */
 bool nss_udp_st_tx_valid(void)
 {
-	long long elapsed = atomic_long_read(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_ELAPSED]);
+	long long elapsed = atomic64_read(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_ELAPSED]);
 
 	if (elapsed < (nust.time * 1000)) {
 		return true;
@@ -464,12 +464,12 @@ static bool nss_udp_st_tx_init(void)
 	uint64_t total_bps;
 
 	if (nust.config.rate > NSS_UDP_ST_RATE_MAX) {
-		atomic_long_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_RATE]);
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_RATE]);
 		return false;
 	}
 
 	if (nust.config.buffer_sz > NSS_UDP_ST_BUFFER_SIZE_MAX) {
-		atomic_long_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_BUFFER_SIZE]);
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_BUFFER_SIZE]);
 		return false;
 	}
 	total_bps = (uint64_t)nust.config.rate * 1024 * 1024;
