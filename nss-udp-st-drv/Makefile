@@ -12,4 +12,8 @@ obj-m += nss-udp-st.o
 #
 nss-udp-st-objs := $(NSS_UDP_ST_BASE_OBJS)
 
+ifdef NSS_UDP_ST_DRV_VP
+ccflags-y += -DNSS_UDP_ST_DRV_VP_ENABLE
+endif
+
 ccflags-y += -Werror -Wall -I$(obj) -I$(obj)/exports

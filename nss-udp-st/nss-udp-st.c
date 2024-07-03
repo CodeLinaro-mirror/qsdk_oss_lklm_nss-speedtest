@@ -45,6 +45,7 @@ struct option long_options[] =
 	{"buffer_sz", required_argument, NULL, 'b'},
 	{"dscp", required_argument, NULL, 'c'},
 	{"timestamp", no_argument, NULL, '0'},
+	{"vp", no_argument, NULL, 'v'},
 	{"help", no_argument, NULL, 'h'},
 	{"cpu_bitmap", required_argument, NULL, 'u'},
 	{0, 0, 0, 0}
@@ -435,7 +436,11 @@ static int nss_udp_st_get_opt(int args, char **argv)
 			break;
 
 		case '0':
-			st_param.ts_test = 1;
+			st_param.flags |= NSS_UDP_ST_FLAGS_TIMESTAMP;
+			break;
+
+		case 'v':
+			st_param.flags |= NSS_UDP_ST_FLAGS_VP;
 			break;
 
 		case 'h':
