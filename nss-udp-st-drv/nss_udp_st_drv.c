@@ -21,6 +21,11 @@
 #include <linux/version.h>
 #include <linux/math64.h>
 #include <net/netfilter/nf_conntrack_core.h>
+#ifdef NSS_UDP_ST_DRV_VP_ENABLE
+#include <ppe_drv.h>
+#include <ppe_drv_vp.h>
+#include <ppe_vp_public.h>
+#endif
 #include "nss_udp_st_public.h"
 
 #define DEVICE_NAME "nss_udp_st"
@@ -96,6 +101,11 @@ static void nss_udp_st_clear_rules(void)
 	struct nss_udp_st_rules *n = NULL;
 
 	list_for_each_entry_safe(pos, n, &nust.rules.list, list) {
+#ifdef NSS_UDP_ST_DRV_VP_ENABLE
+		if (nust.config.flags & NSS_UDP_ST_FLAGS_VP) {
+			nss_udp_st_tun_destroy(pos->tun_dev);
+		}
+#endif
 		list_del(&pos->list);
 		kfree(pos);
 	}
@@ -187,6 +197,8 @@ static ssize_t nss_udp_st_write(struct file *file, const char __user *buf,
 
 	rules->seq_greatest = 0;
 	rules->seq = 0;
+	rules->tun_dev = NULL;
+	rules->vp_num = -1;
 
 	if (nust.bitmap_curr == 0) {
 		nust.bitmap_curr = nust.config.cpu_bitmap;
@@ -199,6 +211,7 @@ static ssize_t nss_udp_st_write(struct file *file, const char __user *buf,
 	rules->cpu = cpu;
 	list_add_tail(&(rules->list), &(nust.rules.list));
 	nust.rule_count++;
+
 	return 0;
 }
 
