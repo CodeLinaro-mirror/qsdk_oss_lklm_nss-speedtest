@@ -591,7 +591,7 @@ static void nss_udp_st_tx_wq_cb(struct work_struct *usw)
 bool nss_udp_st_tx(void)
 {
 	uint32_t i;
-	char qname[7];
+	char qname[NSS_UDP_ST_PROCESS_NAME_SZ];
 
 	if (!nss_udp_st_tx_init()) {
 		return false;
@@ -632,8 +632,7 @@ bool nss_udp_st_tx(void)
 
 	for (i = 0; i < NR_CPUS; i++) {
 		if (!tx_timer_flag[i]) {
-			strlcpy(qname, "udp_st", 7);
-			snprintf(qname + 6, sizeof(uint32_t), "%u", i + 1);
+			snprintf(qname, NSS_UDP_ST_PROCESS_NAME_SZ, "udp_st%u", i + 1);
 			udp_st_wq[i] = create_workqueue(qname);
 			INIT_WORK(&udp_st_work[i], nss_udp_st_tx_wq_cb);
 		}

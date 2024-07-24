@@ -449,6 +449,12 @@ int main(int args, char **argv)
 
 	if (!strcmp(st_cfg.mode,"init")) {
 		system("insmod nss-udp-st.ko");
+
+		/*
+		 * Sleep prevents race condition between
+		 * module load and ioctl call
+		 */
+		sleep(1);
 		st_cfg.handle = open(NSS_UDP_ST_DEV, O_RDWR);
 		nss_udp_st_init();
 		close(st_cfg.handle);
