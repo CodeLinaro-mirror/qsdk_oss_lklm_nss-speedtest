@@ -22,6 +22,7 @@
 #define NSS_UDP_ST_TX_TIMER 100	/* To caluculate pkt per 10 ms*/
 #define NSS_UDP_ST_MIN_HEADROOM	32	/* Min headroom needed */
 #define NSS_UDP_ST_MIN_TAILROOM	32	/* Min tailroom needed */
+#define NSS_UDP_ST_PROCESS_NAME_SZ 8
 
 bool nss_udp_st_tx_valid(void);
 
