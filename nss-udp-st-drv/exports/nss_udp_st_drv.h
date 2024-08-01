@@ -34,12 +34,13 @@
 /*
  * NSS UDP speedtest ioctl parameters
  */
-#define NSS_UDP_ST_IOCTL_MAGIC	'n'
-#define NSS_UDP_ST_IOCTL_INIT	_IOW(NSS_UDP_ST_IOCTL_MAGIC, 0, struct nss_udp_st_param* )
-#define NSS_UDP_ST_IOCTL_START_TX	_IOW(NSS_UDP_ST_IOCTL_MAGIC, 1, int)
-#define NSS_UDP_ST_IOCTL_START_RX	_IOW(NSS_UDP_ST_IOCTL_MAGIC, 2, int)
-#define NSS_UDP_ST_IOCTL_STOP	_IO(NSS_UDP_ST_IOCTL_MAGIC, 3)
-#define NSS_UDP_ST_DEV	"/dev/nss_udp_st"
+#define NSS_UDP_ST_IOCTL_MAGIC			'n'
+#define NSS_UDP_ST_IOCTL_INIT			_IOW(NSS_UDP_ST_IOCTL_MAGIC, 0, struct nss_udp_st_param* )
+#define NSS_UDP_ST_IOCTL_START_TX		_IOW(NSS_UDP_ST_IOCTL_MAGIC, 1, int)
+#define NSS_UDP_ST_IOCTL_START_RX		_IOW(NSS_UDP_ST_IOCTL_MAGIC, 2, int)
+#define NSS_UDP_ST_IOCTL_STOP			_IO(NSS_UDP_ST_IOCTL_MAGIC, 3)
+#define NSS_UDP_ST_IOCTL_RATE_CHANGE		_IOW(NSS_UDP_ST_IOCTL_MAGIC, 4, uint32_t)
+#define NSS_UDP_ST_DEV				"/dev/nss_udp_st"
 
 #ifdef __KERNEL__ /* only kernel will use. */
 #define NSS_UDP_ST_MAX_HEADROOM 32	/* Maximum headroom needed */
@@ -159,6 +160,8 @@ struct nss_udp_st_pkt_stats {
 	atomic64_t rx_bytes;		/* Number of bytes received */
 	atomic64_t ooo;			/* Out of order packets */
 	atomic64_t dropped;		/* Dropped packets */
+	atomic64_t max_latency;		/* Max Packet Delay */
+	atomic64_t min_latency;		/* Min Packet Delay */
 };
 
 /*

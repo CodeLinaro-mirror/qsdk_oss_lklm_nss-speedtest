@@ -246,6 +246,21 @@ static int nss_udp_st_stop(void)
 }
 
 /*
+ * nss_udp_st_rate_change()
+ *	Send ioctl to change rate of NSS USP speedtest
+ */
+static int nss_udp_st_rate_change(void)
+{
+	int ret = ioctl(st_cfg.handle, NSS_UDP_ST_IOCTL_RATE_CHANGE, &st_param.rate);
+	if (ret < 0) {
+		printf("ioctl error %d\n", ret);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/*
  * nss_udp_st_stats()
  *	Read NSS UDP speedtest results
  */
@@ -313,12 +328,18 @@ static int nss_udp_st_stats(void)
 
 	if (st_cfg.type == NSS_UDP_ST_RX) {
 		fprintf(fp, "\nLatency Stats\n");
-		fprintf(fp, "\taverage latency  = %lld ms\n",
-			(st_stat.total_latency / 1000000) / st_stat.p_stats.rx_packets);
 		fprintf(fp, "\tdropped packets  = %lld pkts\n",
 			st_stat.p_stats.dropped);
 		fprintf(fp, "\tout of order packets  = %lld pkts\n",
 			st_stat.p_stats.ooo);
+		fprintf(fp, "\taverage latency  = %lld ms\n",
+			(st_stat.total_latency / 1000000) / st_stat.p_stats.rx_packets);
+		fprintf(fp, "\ttotal latency  = %lld ms\n",
+			st_stat.total_latency);
+		fprintf(fp, "\tminimum latency  = %lld ms\n",
+			st_stat.p_stats.min_latency);
+		fprintf(fp, "\tmaximum latency  = %lld ms\n",
+			st_stat.p_stats.max_latency);
 	}
 
 	fclose(fp);
@@ -338,6 +359,7 @@ static void nss_udp_st_usage(void)
 		--sport <sport> --dport <dport> --version <4/6>");
 	printf("\n./nss_udp_st --mode <start> --type <tx/rx> --time <time in seconds>");
 	printf("\n./nss_udp_st --mode <stats> --type <tx/rx>");
+	printf("\n./nss_udp_st --mode <rate_change> --rate <rate in Mbps>");
 	printf("\n./nss_udp_st --mode <list/clear/final>");
 }
 
@@ -473,6 +495,10 @@ int main(int args, char **argv)
 	} else if (!strcmp(st_cfg.mode,"stop")) {
 		st_cfg.handle = open(NSS_UDP_ST_DEV, O_RDWR);
 		nss_udp_st_stop();
+		close(st_cfg.handle);
+	} else if (!strcmp(st_cfg.mode,"rate_change")) {
+		st_cfg.handle = open(NSS_UDP_ST_DEV, O_RDWR);
+		nss_udp_st_rate_change();
 		close(st_cfg.handle);
 	} else if (!strcmp(st_cfg.mode,"stats")) {
 		st_cfg.handle = open(NSS_UDP_ST_DEV, O_RDWR);

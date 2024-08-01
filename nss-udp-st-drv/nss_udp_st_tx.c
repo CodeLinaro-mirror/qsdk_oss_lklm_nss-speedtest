@@ -496,6 +496,33 @@ static void nss_udp_st_tx_work_send_packets(int cpu)
 }
 
 /*
+ * nss_udp_st_tx_rate_change
+ *	Dynamically change the rate of speedtest
+ */
+bool nss_udp_st_tx_rate_change(uint32_t rate)
+{
+	uint64_t total_bps;
+
+	if (nust.config.rate > NSS_UDP_ST_RATE_MAX) {
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_RATE]);
+		return false;
+	}
+
+	/*
+	 * Convert Mbps to bps
+	 */
+	total_bps = (uint64_t)rate * 1000000;
+
+	/*
+	 * calculate number of pkts to send per rule per 10 ms
+	 */
+	nss_udp_st_tx_num_pkt = div_u64(total_bps , (nust.rule_count * (nust.config.buffer_sz + sizeof(struct ethhdr)) * 8 * NSS_UDP_ST_TX_TIMER));
+	nss_udp_st_tx_num_pkt++;
+
+	return true;
+}
+
+/*
  * nss_udp_st_tx_init()
  *	initialize speedtest for tx
  */
@@ -512,7 +539,11 @@ static bool nss_udp_st_tx_init(void)
 		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_BUFFER_SIZE]);
 		return false;
 	}
-	total_bps = (uint64_t)nust.config.rate * 1024 * 1024;
+
+	/*
+	 * Convert Mbps to bps
+	 */
+	total_bps = (uint64_t)nust.config.rate * 1000000;
 
 	/*
 	 * calculate number of pkts to send per rule per 10 ms
