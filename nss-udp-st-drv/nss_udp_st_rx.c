@@ -62,6 +62,14 @@ static void nss_udp_st_process_payload(struct sk_buff *skb, struct nss_udp_st_ru
 	do_div(time, 1000000);
 	latency = time - ts_info->timestamp;
 	atomic64_add(latency, &nust.stats.total_latency);
+	if (latency < atomic64_read(&nust.stats.p_stats.min_latency)) {
+		atomic64_set(&nust.stats.p_stats.min_latency, latency);
+	}
+
+	if (latency > atomic64_read(&nust.stats.p_stats.max_latency)) {
+		atomic64_set(&nust.stats.p_stats.max_latency, latency);
+	}
+
 	nss_udp_st_seq_check(rule, ts_info->seq);
 }
 

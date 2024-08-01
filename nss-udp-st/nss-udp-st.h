@@ -59,8 +59,10 @@ struct nss_udp_st_pkt_stats {
 	atomic_llong tx_bytes;		/* Number of bytes transmitted */
 	atomic_llong rx_packets;	/* Number of packets received */
 	atomic_llong rx_bytes;		/* Number of bytes received */
-	atomic_llong ooo;			/* Out of order packets */
+	atomic_llong ooo;		/* Out of order packets */
 	atomic_llong dropped;		/* Dropped packets */
+	atomic_llong max_latency;	/* Max Packet Delay */
+	atomic_llong min_latency;	/* Min Packet Delay */
 };
 
 /*

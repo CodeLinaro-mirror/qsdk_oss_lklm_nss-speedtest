@@ -206,10 +206,13 @@ static ssize_t nss_udp_st_write(struct file *file, const char __user *buf,
  * nss_udp_st_reset_stats()
  *	clear stats before starting test
  */
-static void nss_udp_st_reset_stats(void) {
+static void nss_udp_st_reset_stats(void)
+{
 	memset(&nust.stats, 0, sizeof(struct nss_udp_st_stats));
 	nust.stats.first_pkt = true;
 	nss_udp_st_tx_num_pkt = 0;
+	atomic64_set(&nust.stats.p_stats.min_latency, U64_MAX);
+	atomic64_set(&nust.stats.p_stats.max_latency, 0);
 }
 
 /*
@@ -308,6 +311,17 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 			nss_udp_st_hrtimer_cleanup();
 		}
 		nss_udp_st_clear_rules();
+		break;
+
+	case NSS_UDP_ST_IOCTL_RATE_CHANGE:
+		ret = copy_from_user((void *)&(nust.config.rate), (void __user *)arg, sizeof(nust.config.rate));
+		if (ret) {
+			return -EINVAL;
+		}
+
+		if(!nss_udp_st_tx_rate_change(nust.config.rate)) {
+			pr_debug("Rate change failed\n");
+		}
 		break;
 
 	default:
