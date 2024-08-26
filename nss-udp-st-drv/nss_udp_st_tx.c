@@ -508,6 +508,11 @@ static bool nss_udp_st_tx_init(void)
 		return false;
 	}
 
+	if (nust.config.buffer_sz < NSS_UDP_ST_BUFFER_SIZE_MIN) {
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_BUFFER_SIZE]);
+		return false;
+	}
+
 	if (nust.config.buffer_sz > NSS_UDP_ST_BUFFER_SIZE_MAX) {
 		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_BUFFER_SIZE]);
 		return false;

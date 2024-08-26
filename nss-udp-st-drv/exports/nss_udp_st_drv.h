@@ -44,6 +44,7 @@
 #ifdef __KERNEL__ /* only kernel will use. */
 #define NSS_UDP_ST_MAX_HEADROOM 32	/* Maximum headroom needed */
 #define NSS_UDP_ST_MAX_TAILROOM 32	/* Maximum tailroom needed */
+#define NSS_UDP_ST_BUFFER_SIZE_MIN 64	/* 64 bytes */
 #define NSS_UDP_ST_BUFFER_SIZE_MAX 1500	/* 1500 bytes */
 #define NSS_UDP_ST_RATE_MAX 20000000000	/* 20 Gbps */
 
