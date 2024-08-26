@@ -28,7 +28,7 @@ static void nss_udp_st_seq_check(struct nss_udp_st_rules *rule, uint64_t seq)
 {
 	if (seq > rule->seq_greatest) {
 		if (seq != rule->seq_greatest + 1)
-			atomic64_add(rule->seq_greatest - seq, &nust.stats.p_stats.dropped);
+			atomic64_add(seq - rule->seq_greatest, &nust.stats.p_stats.dropped);
 		rule->seq_greatest = seq;
 	} else if (seq < rule->seq_greatest) {
 		atomic64_sub(1, &nust.stats.p_stats.dropped);
@@ -60,7 +60,12 @@ static void nss_udp_st_process_payload(struct sk_buff *skb, struct nss_udp_st_ru
 
 	ts_info = (struct nss_udp_st_timestamp_info *)skb_pull(skb, hdr_sz);
 	do_div(time, 1000000);
-	latency = time - ts_info->timestamp;
+	if (time > ts_info->timestamp) {
+		latency = time - ts_info->timestamp;
+	} else {
+		latency = ts_info->timestamp - time;
+	}
+
 	atomic64_add(latency, &nust.stats.total_latency);
 	if (latency < atomic64_read(&nust.stats.p_stats.min_latency)) {
 		atomic64_set(&nust.stats.p_stats.min_latency, latency);

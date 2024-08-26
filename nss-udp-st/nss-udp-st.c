@@ -333,7 +333,7 @@ static int nss_udp_st_stats(void)
 		fprintf(fp, "\tout of order packets  = %lld pkts\n",
 			st_stat.p_stats.ooo);
 		fprintf(fp, "\taverage latency  = %lld ms\n",
-			(st_stat.total_latency / 1000000) / st_stat.p_stats.rx_packets);
+			(st_stat.total_latency) / st_stat.p_stats.rx_packets);
 		fprintf(fp, "\ttotal latency  = %lld ms\n",
 			st_stat.total_latency);
 		fprintf(fp, "\tminimum latency  = %lld ms\n",
