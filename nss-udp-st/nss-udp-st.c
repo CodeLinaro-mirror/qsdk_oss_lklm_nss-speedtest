@@ -512,6 +512,11 @@ static int nss_udp_st_get_opt(int args, char **argv)
 			break;
 
 		case 't':
+			if (st_cfg.type == NSS_UDP_ST_RX) {
+				printf("Time duration cannot be configured for RX driver, this value will be igorned: %s\n", optarg);
+				printf("Rx test can be stopped using nss-udp-st --mode stop\n");
+				break;
+			}
 			st_cfg.time = atoi(optarg);
 			break;
 
