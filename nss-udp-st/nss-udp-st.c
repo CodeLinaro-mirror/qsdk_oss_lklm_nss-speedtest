@@ -23,6 +23,7 @@
 #include <string.h>
 #include <getopt.h>
 #include <stdbool.h>
+#include <arpa/inet.h>
 #include "nss-udp-st.h"
 
 struct nss_udp_st_param st_param;
@@ -78,12 +79,63 @@ static void nss_udp_st_final(void)
 }
 
 /*
+ * nss_udp_st_rule_check()
+ *	Checks if configured rule is valid
+ */
+static bool nss_udp_st_rule_check(void)
+{
+	struct in_addr addr;
+	struct in6_addr addr6;
+
+	if (st_opt.ip_version == 4) {
+		if (inet_pton(AF_INET, st_opt.sip, &addr) != 1) {
+			printf("Invalid Source IP Address %s\n", st_opt.sip);
+			return false;
+		} else if (inet_pton(AF_INET, st_opt.dip, &addr) != 1) {
+			printf("Invalid Destination IP Address %s\n", st_opt.dip);
+			return false;
+		}
+
+	} else if (st_opt.ip_version == 6) {
+		if (inet_pton(AF_INET6, st_opt.sip, &addr6) != 1) {
+			printf("Invalid Source IP Address %s\n", st_opt.sip);
+			return false;
+		} else if (inet_pton(AF_INET6, st_opt.dip, &addr6) != 1) {
+			printf("Invalid Destination IP Address %s\n", st_opt.dip);
+			return false;
+		}
+
+	} else {
+		printf("Invalid ip version %d\n", st_opt.ip_version);
+		return false;
+	}
+
+	/*
+	 * Check if ports are valid
+	 */
+	if (st_opt.sport == 0) {
+		printf("Rule create failure due to invalid source port\n");
+		return false;
+	} else if (st_opt.dport == 0) {
+		printf("Rule create failure due to invalid destination port\n");
+		return false;
+	}
+
+	return true;
+}
+
+/*
  * nss_udp_st_create()
  *	Configure NSS UDP speedtest rules
  */
 static int nss_udp_st_create(void)
 {
 	FILE *fp = NULL;
+
+	if (!nss_udp_st_rule_check()) {
+		printf("Failed to add invalid rule\n");
+		return -EINVAL;
+	}
 
 	fp = fopen(NSS_UDP_ST_RULES, "a+");
 	if (!fp) {
@@ -333,7 +385,7 @@ static int nss_udp_st_stats(void)
 		fprintf(fp, "\tout of order packets  = %lld pkts\n",
 			st_stat.p_stats.ooo);
 		fprintf(fp, "\taverage latency  = %lld ms\n",
-			(st_stat.total_latency / 1000000) / st_stat.p_stats.rx_packets);
+			(st_stat.total_latency) / st_stat.p_stats.rx_packets);
 		fprintf(fp, "\ttotal latency  = %lld ms\n",
 			st_stat.total_latency);
 		fprintf(fp, "\tminimum latency  = %lld ms\n",
@@ -371,6 +423,8 @@ static int nss_udp_st_get_opt(int args, char **argv)
 {
 	int c = 0;
 	int option_index = 0;
+	uint64_t port_tmp;
+	char *endptr;
 
 	while (1) {
 		c = getopt_long_only(args, argv, "m:x:s:d:y:z:n:f:t:r:b:c:0:u",
@@ -403,11 +457,50 @@ static int nss_udp_st_get_opt(int args, char **argv)
 			break;
 
 		case 'y':
-			st_opt.sport = atoi(optarg);
+			/*
+			 * First assign port to 64 bit variable,
+			 * if initial assignment is done to 16 bit
+			 * variable there may be wraparound if the
+			 * inputted port is greater than UINT16_MAX,
+			 * causing unexpected behavior
+			 */
+			port_tmp = strtol(optarg, &endptr, 10);
+			if (*endptr != '\0') {
+				printf("Invalid source port %s\n", optarg);
+				st_opt.sport = 0;
+				break;
+			}
+
+			if (port_tmp > UINT16_MAX) {
+				printf("Invalid source port %"PRIu64"\n", port_tmp);
+				st_opt.sport = 0;
+				break;
+			}
+
+			st_opt.sport = port_tmp;
 			break;
 
 		case 'z':
-			st_opt.dport = atoi(optarg);
+			/*
+			 * First assign port to 64 bit variable,
+			 * if initial assignment is done to 16 bit
+			 * variable there may be wraparound if the
+			 * inputted port is greater than UINT16_MAX,
+			 * causing unexpected behavior
+			 */
+			port_tmp = strtol(optarg, &endptr, 10);
+			if (*endptr != '\0') {
+				printf("Invalid destination port %s\n", optarg);
+				st_opt.dport = 0;
+				break;
+			}
+			if (port_tmp > UINT16_MAX) {
+				printf("Invalid destination port %"PRIu64"\n", port_tmp);
+				st_opt.dport = 0;
+				break;
+			}
+
+			st_opt.dport = port_tmp;
 			break;
 
 		case 'n':
@@ -419,6 +512,11 @@ static int nss_udp_st_get_opt(int args, char **argv)
 			break;
 
 		case 't':
+			if (st_cfg.type == NSS_UDP_ST_RX) {
+				printf("Time duration cannot be configured for RX driver, this value will be igorned: %s\n", optarg);
+				printf("Rx test can be stopped using nss-udp-st --mode stop\n");
+				break;
+			}
 			st_cfg.time = atoi(optarg);
 			break;
 

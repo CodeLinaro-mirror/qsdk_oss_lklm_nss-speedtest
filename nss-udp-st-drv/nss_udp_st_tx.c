@@ -192,7 +192,8 @@ static void nss_udp_st_add_seq_tstamp(struct sk_buff *skb, struct nss_udp_st_rul
 	time = ktime_get_real_ns();
 	do_div(time, 1000000);
 	ts_info.timestamp = time;
-	data = (unsigned char *)&ts_info;
+
+	memcpy(data, &ts_info, sizeof(struct nss_udp_st_timestamp_info));
 }
 
 /*
