@@ -40,6 +40,7 @@
 #define NSS_UDP_ST_IOCTL_START_RX		_IOW(NSS_UDP_ST_IOCTL_MAGIC, 2, int)
 #define NSS_UDP_ST_IOCTL_STOP			_IO(NSS_UDP_ST_IOCTL_MAGIC, 3)
 #define NSS_UDP_ST_IOCTL_RATE_CHANGE		_IOW(NSS_UDP_ST_IOCTL_MAGIC, 4, uint32_t)
+#define NSS_UDP_ST_IOCTL_RESET_STATS		_IO(NSS_UDP_ST_IOCTL_MAGIC, 5)
 #define NSS_UDP_ST_DEV				"/dev/nss_udp_st"
 
 #ifdef __KERNEL__ /* only kernel will use. */
