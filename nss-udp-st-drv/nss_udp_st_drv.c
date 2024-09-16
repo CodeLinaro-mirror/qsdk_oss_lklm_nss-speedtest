@@ -221,11 +221,23 @@ static ssize_t nss_udp_st_write(struct file *file, const char __user *buf,
  */
 static void nss_udp_st_reset_stats(void)
 {
+	struct nss_udp_st_rules *rule = NULL;
+	struct nss_udp_st_rules *n = NULL;
+
 	memset(&nust.stats, 0, sizeof(struct nss_udp_st_stats));
 	nust.stats.first_pkt = true;
 	nss_udp_st_tx_num_pkt = 0;
 	atomic64_set(&nust.stats.p_stats.min_latency, U64_MAX);
 	atomic64_set(&nust.stats.p_stats.max_latency, 0);
+
+	/*
+	 * Sequence counters are maintained per connection
+	 * and thus need to be reset for each connection
+	 */
+	list_for_each_entry_safe(rule, n, &nust.rules.list, list) {
+		rule->seq_greatest = 0;
+		rule->seq = 0;
+	}
 }
 
 /*
@@ -335,6 +347,10 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 		if(!nss_udp_st_tx_rate_change(nust.config.rate)) {
 			pr_debug("Rate change failed\n");
 		}
+		break;
+
+	case NSS_UDP_ST_IOCTL_RESET_STATS:
+		nss_udp_st_reset_stats();
 		break;
 
 	default:
