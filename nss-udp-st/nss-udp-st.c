@@ -314,6 +314,21 @@ static int nss_udp_st_rate_change(void)
 }
 
 /*
+ * nss_udp_st_reset_stats()
+ *	Send ioctl to reset stats of NSS UDP speedtest
+ */
+static int nss_udp_st_reset_stats(void)
+{
+	int ret = ioctl(st_cfg.handle, NSS_UDP_ST_IOCTL_RESET_STATS);
+	if (ret < 0) {
+		printf("ioctl error %d\n", ret);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/*
  * nss_udp_st_stats()
  *	Read NSS UDP speedtest results
  */
@@ -412,6 +427,7 @@ static void nss_udp_st_usage(void)
 		--sport <sport> --dport <dport> --version <4/6>");
 	printf("\n./nss_udp_st --mode <start> --type <tx/rx> --time <time in seconds>");
 	printf("\n./nss_udp_st --mode <stats> --type <tx/rx>");
+	printf("\n./nss_udp_st --mode <reset_stats>");
 	printf("\n./nss_udp_st --mode <rate_change> --rate <rate in Mbps>");
 	printf("\n./nss_udp_st --mode <list/clear/final>");
 }
@@ -602,6 +618,10 @@ int main(int args, char **argv)
 	} else if (!strcmp(st_cfg.mode,"rate_change")) {
 		st_cfg.handle = open(NSS_UDP_ST_DEV, O_RDWR);
 		nss_udp_st_rate_change();
+		close(st_cfg.handle);
+	} else if (!strcmp(st_cfg.mode,"reset_stats")) {
+		st_cfg.handle = open(NSS_UDP_ST_DEV, O_RDWR);
+		nss_udp_st_reset_stats();
 		close(st_cfg.handle);
 	} else if (!strcmp(st_cfg.mode,"stats")) {
 		st_cfg.handle = open(NSS_UDP_ST_DEV, O_RDWR);
