@@ -25,6 +25,11 @@
 #include <linux/if_vlan.h>
 #include <linux/if_pppox.h>
 #include <net/ip6_checksum.h>
+#ifdef NSS_UDP_ST_DRV_VP_ENABLE
+#include <ppe_drv_iface.h>
+#include <ppe_vp_tx.h>
+#include <nss_ppe_tun_drv.h>
+#endif
 #include "nss_udp_st_public.h"
 
 int tx_timer_flag[NR_CPUS];
@@ -178,7 +183,7 @@ static void nss_udp_st_generate_pppoe_hdr(struct sk_buff *skb, uint16_t ppp_prot
 
 /*
  * nss_udp_st_add_seq_tstamp()
- *	fill the packet paylod with seq num and timestamp
+ *	fill the payload with seq num and timestamp
  */
 static void nss_udp_st_add_seq_tstamp(struct sk_buff *skb, struct nss_udp_st_rules *rules)
 {
@@ -187,14 +192,56 @@ static void nss_udp_st_add_seq_tstamp(struct sk_buff *skb, struct nss_udp_st_rul
 	struct nss_udp_st_timestamp_info ts_info;
 
 	data = skb_put(skb, sizeof(struct nss_udp_st_timestamp_info));
-	ts_info.seq = rules->seq;
+	ts_info.seq = cpu_to_be64(rules->seq);
 	rules->seq++;
 	time = ktime_get_real_ns();
 	do_div(time, 1000000);
-	ts_info.timestamp = time;
+	ts_info.timestamp = cpu_to_be64(time);
 
 	memcpy(data, &ts_info, sizeof(struct nss_udp_st_timestamp_info));
 }
+
+#ifdef NSS_UDP_ST_DRV_VP_ENABLE
+/*
+ * nss_udp_st_tx_packets_vp()
+ *	allocate, populate and send tx packet to vp
+ */
+static void nss_udp_st_tx_packets_vp(struct net_device *ndev, struct nss_udp_st_rules *rules, int cpu)
+{
+	struct sk_buff *skb;
+	size_t skb_sz;
+	size_t pkt_sz;
+
+	pkt_sz = nust.config.buffer_sz;
+	skb_sz = NSS_UDP_ST_MIN_HEADROOM + pkt_sz + sizeof(struct ethhdr) + NSS_UDP_ST_MIN_TAILROOM + SMP_CACHE_BYTES;
+
+	skb = dev_alloc_skb(skb_sz);
+	if (!skb) {
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_MEMORY_FAILURE]);
+		return;
+	}
+
+	if (nust.config.flags & NSS_UDP_ST_FLAGS_TIMESTAMP) {
+		nss_udp_st_add_seq_tstamp(skb, rules);
+		skb_put(skb, pkt_sz - sizeof(struct nss_udp_st_timestamp_info));
+	} else {
+		skb_put(skb, pkt_sz);
+	}
+
+	/*
+	 * tx packet
+	 */
+	skb->dev = rules->tun_dev;
+
+	if (!ppe_vp_tx_to_vp(rules->vp_num, skb)) {
+		pr_err("Dropping skb %pxd, edma failed to enqueue to PPE tun dev %p", skb, rules->tun_dev);
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_PACKET_DROP]);
+		return;
+	}
+
+	nss_udp_st_update_stats(pkt_sz);
+}
+#endif
 
 /*
  * nss_udp_st_tx_packets()
@@ -238,7 +285,7 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 	align_offset = PTR_ALIGN(skb->data, SMP_CACHE_BYTES) - skb->data;
 	skb_reserve(skb, NSS_UDP_ST_MAX_HEADROOM + align_offset + sizeof(uint16_t));
 
-	if (nust.config.ts_test) {
+	if (nust.config.flags & NSS_UDP_ST_FLAGS_TIMESTAMP) {
 		nss_udp_st_add_seq_tstamp(skb, rules);
 		payload_sz = sizeof(struct nss_udp_st_timestamp_info);
 	}
@@ -455,6 +502,184 @@ fail:
 	return ret;
 }
 
+#ifdef NSS_UDP_ST_DRV_VP_ENABLE
+
+/*
+ * nss_udp_st_dummy_netdev_setup()
+ *	Netdev setup function.
+ */
+static void nss_udp_st_dummy_netdev_setup(struct net_device *dev)
+{
+	dev->addr_len = ETH_ALEN;
+	dev->mtu = ETH_DATA_LEN;
+	dev->needed_headroom = NSS_UDP_ST_MIN_HEADROOM;
+	dev->needed_tailroom = NSS_UDP_ST_MIN_TAILROOM;
+	dev->type = ARPHRD_VOID;
+	dev->ethtool_ops = NULL;
+	dev->header_ops = NULL;
+	dev->netdev_ops = NULL;
+	dev->priv_destructor = NULL;
+
+	memcpy((void*)dev->dev_addr, "\x00\x00\x00\x00\x00\x00", dev->addr_len);
+	memset(dev->broadcast, 0xff, dev->addr_len);
+	memcpy(dev->perm_addr, dev->dev_addr, dev->addr_len);
+}
+
+/*
+ * nss_udp_st_tun_setup
+ * 	initialize encap entry for tx vp
+ */
+static bool nss_udp_st_tun_setup(struct nss_udp_st_rules *rule)
+{
+
+	ppe_drv_iface_t iface_idx;
+	struct ppe_drv_iface *iface = NULL;
+	struct udphdr uh;
+	struct iphdr iph;
+	struct ipv6hdr ipv6h;
+	size_t pkt_sz;
+	uint16_t udp_len;
+	uint16_t ip_len;
+	uint32_t port_num;
+
+	struct ppe_drv_tun_cmn_ctx tun_hdr = {0};
+	struct ppe_drv_tun_cmn_ctx_l2 *l2 = &tun_hdr.l2;
+	struct ppe_drv_tun_cmn_ctx_l3 *l3 = &tun_hdr.l3;
+	struct ppe_drv_tun_cmn_ctx_cust_udp_st *l4 = &tun_hdr.tun.cust.cust_tun.udp_st;
+
+	/*
+	 * Get the PPE port associated with the egress interface.
+	 */
+	iface_idx = ppe_drv_iface_idx_get_by_dev(nust_dev);
+	if (iface_idx == -1) {
+		pr_err("Failed to get iface index\n");
+		return false;
+	}
+
+	iface = ppe_drv_iface_get_by_idx(iface_idx);
+	if (!iface) {
+		pr_err("Failed to get iface using index %d\n", iface_idx);
+		return false;
+	}
+
+	port_num = ppe_drv_iface_port_idx_get(iface);
+	if (port_num == -1) {
+		pr_err("Failed to get port using iface: %d\n", iface_idx);
+		return false;
+	}
+
+	if (rule->flags & NSS_UDP_ST_FLAG_IPV4) {
+		udp_len = pkt_sz - sizeof(struct iphdr);
+		l2->eth_type = ETH_P_IP;
+	} else if (rule->flags & NSS_UDP_ST_FLAG_IPV6) {
+		udp_len = pkt_sz - sizeof(struct ipv6hdr);
+		l2->eth_type = ETH_P_IPV6;
+	} else {
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_IP_VERSION]);
+		return false;
+	}
+
+	/*
+	 * Set the tunnel type to custom and custom type to udpst.
+	 */
+	tun_hdr.type = PPE_DRV_TUN_CMN_CTX_TYPE_CUST;
+	tun_hdr.tun.cust.cust_type = PPE_DRV_TUN_CMN_CTX_CUST_TYPE_UDP_ST;
+
+	/*
+	 * populate L2 header
+	 */
+	memcpy(&l2->smac, nust_dev->dev_addr, ETH_ALEN);
+	memcpy(&l2->dmac, rule->dst_mac, ETH_ALEN);
+	l2->xmit_port = port_num;
+
+	/*
+	 * populate ipv4 or ipv6  header
+	 */
+	if (rule->flags & NSS_UDP_ST_FLAG_IPV4) {
+		nss_udp_st_generate_ipv4_hdr(&iph, ip_len, rule);
+		l3->saddr[0] = iph.saddr;
+		l3->daddr[0] = iph.daddr;
+		l3->ttl = iph.ttl;
+		l3->dscp = iph.tos >> 2;
+		l3->proto = iph.protocol;
+		l3->flags = PPE_DRV_TUN_CMN_CTX_L3_IPV4;
+	} else if (rule->flags & NSS_UDP_ST_FLAG_IPV6) {
+		nss_udp_st_generate_ipv6_hdr(&ipv6h, ip_len, rule);
+		l3->saddr[0] = ipv6h.saddr.s6_addr32[0];
+		l3->saddr[1] = ipv6h.saddr.s6_addr32[1];
+		l3->saddr[2] = ipv6h.saddr.s6_addr32[2];
+		l3->saddr[3] = ipv6h.saddr.s6_addr32[3];
+
+		l3->daddr[0] = ipv6h.daddr.s6_addr32[0];
+		l3->daddr[1] = ipv6h.daddr.s6_addr32[1];
+		l3->daddr[2] = ipv6h.daddr.s6_addr32[2];
+		l3->daddr[3] = ipv6h.daddr.s6_addr32[3];
+
+		l3->ttl = ipv6h.hop_limit;
+		l3->proto = ipv6h.nexthdr;
+		l3->flags = PPE_DRV_TUN_CMN_CTX_L3_IPV6;
+	} else {
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_IP_VERSION]);
+		return false;
+	}
+
+	/*
+	 * populate udp header
+	 */
+	nss_udp_st_generate_udp_hdr(&uh, udp_len, rule);
+	l4->sport = uh.source;
+	l4->dport = uh.dest;
+
+	/*
+	 * Allocate internal tunnel net device
+	 */
+	rule->tun_dev = alloc_netdev(0,"udpst_tun%d",
+				NET_NAME_ENUM, nss_udp_st_dummy_netdev_setup);
+	if (!rule->tun_dev) {
+		pr_err("Error allocating internal tunnel dev\n");
+		return false;
+	}
+
+	if (!ppe_tun_setup(rule->tun_dev, &tun_hdr)) {
+		pr_err("failed to configure tunnel\n");
+		free_netdev(rule->tun_dev);
+		return false;
+	}
+
+	/*
+	 * Get and maintain vp_num as we cannot get this from an hr timer context
+	 */
+	rule->vp_num = ppe_drv_port_num_from_dev(rule->tun_dev);
+	if (unlikely((rule->vp_num < PPE_DRV_VIRTUAL_START) || (rule->vp_num >= PPE_DRV_VIRTUAL_END))) {
+		pr_err("Not a valid Virtual Port number %d dev %s", rule->vp_num, rule->tun_dev->name);
+		nss_udp_st_tun_destroy(rule->tun_dev);
+		return false;
+	}
+
+	return true;
+}
+
+/*
+ * nss_udp_st_tun_setup_for_all_rules
+ * 	Setup PPE tunnels for all the rules
+ */
+static uint8_t nss_udp_st_tun_setup_for_all_rules(void)
+{
+	struct nss_udp_st_rules *pos = NULL;
+	struct nss_udp_st_rules *n = NULL;
+
+	list_for_each_entry_safe(pos, n, &nust.rules.list, list) {
+		if (pos->tun_dev == NULL) {
+			if (!nss_udp_st_tun_setup(pos)) {
+				return 0;
+			}
+		}
+	}
+
+	return 1;
+}
+#endif
+
 /*
  * nss_udp_st_tx_work_send_packets()
  *	generate and send packets per rule
@@ -489,7 +714,14 @@ static void nss_udp_st_tx_work_send_packets(int cpu)
 				return;
 			}
 
-			nss_udp_st_tx_packets(nust_dev, pos, cpu);
+#ifdef NSS_UDP_ST_DRV_VP_ENABLE
+			if (nust.config.flags & NSS_UDP_ST_FLAGS_VP) {
+				nss_udp_st_tx_packets_vp(nust_dev, pos, cpu);
+			} else
+#endif
+			{
+				nss_udp_st_tx_packets(nust_dev, pos, cpu);
+			}
 		}
 	}
 	put_cpu();
@@ -555,14 +787,39 @@ static bool nss_udp_st_tx_init(void)
 	 * calculate number of pkts to send per rule per 10 ms
 	 */
 	nss_udp_st_tx_num_pkt = div_u64(total_bps , (nust.rule_count * (nust.config.buffer_sz + sizeof(struct ethhdr)) * 8 * NSS_UDP_ST_TX_TIMER));
-	nss_udp_st_tx_num_pkt ++;
-	pr_debug("total number of packets to tx every 100ms %llu\n",nss_udp_st_tx_num_pkt);
+	nss_udp_st_tx_num_pkt++;
 	if(!nss_udp_st_set_dev()) {
+		pr_err("Failed to set dev\n");
 		return false;
+	}
+
+	if (nust.config.flags & NSS_UDP_ST_FLAGS_VP) {
+#ifdef NSS_UDP_ST_DRV_VP_ENABLE
+		if (!nss_udp_st_tun_setup_for_all_rules()) {
+			pr_err("Failed to Setup tunnels for all rules\n");
+			return false;
+		}
+#else
+		pr_err("No VP support on this SOC\n");
+		return false;
+#endif
 	}
 
 	return true;
 }
+
+/*
+ * nss_udp_st_tun_destroy
+ *	Destroy PPE tunnel associated with the connection.
+ */
+#ifdef NSS_UDP_ST_DRV_VP_ENABLE
+void nss_udp_st_tun_destroy(struct net_device *dev) {
+	if (nust.dir == NSS_UDP_ST_TX) {
+		ppe_tun_destroy(dev);
+		free_netdev(dev);
+	}
+}
+#endif
 
 /*
  * nss_udp_st_hrtimer_cleanup()
@@ -631,11 +888,16 @@ bool nss_udp_st_tx(void)
 	char qname[NSS_UDP_ST_PROCESS_NAME_SZ];
 
 	if (!nss_udp_st_tx_init()) {
+		pr_err("Failed to init tx\n");
 		return false;
 	}
 
 	switch (nust_dev->type) {
 	case ARPHRD_PPP:
+		if (nust.config.flags & NSS_UDP_ST_FLAGS_VP) {
+			pr_err("PPPOE + VP speedtest is not supported\n");
+			return false;
+		}
 		if(nss_udp_st_pppoe_iface_config(nust_dev) < 0) {
 			pr_err("Could not configure pppoe, dev: %s\n", nust_dev->name);
 			return false;
@@ -650,6 +912,10 @@ bool nss_udp_st_tx(void)
 		}
 
 		if (is_vlan_dev(nust_dev)) {
+			if (nust.config.flags & NSS_UDP_ST_FLAGS_VP) {
+				pr_err("VLAN + VP speedtest is not supported\n");
+				return false;
+			}
 			if (nss_udp_st_vlan_iface_config(nust_dev) < 0) {
 				pr_err("Could not configure vlan, dev: %s\n", nust_dev->name);
 				return false;
