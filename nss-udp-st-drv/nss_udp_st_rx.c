@@ -43,7 +43,8 @@ static void nss_udp_st_seq_check(struct nss_udp_st_rules *rule, uint64_t seq)
 static void nss_udp_st_process_payload(struct sk_buff *skb, struct nss_udp_st_rules *rule, uint8_t ip_version)
 {
         uint64_t time;
-	uint64_t latency;
+	uint64_t latency = 0;
+	uint64_t le_timestamp;
 	uint16_t hdr_sz;
 	struct nss_udp_st_timestamp_info *ts_info;
 
@@ -60,10 +61,9 @@ static void nss_udp_st_process_payload(struct sk_buff *skb, struct nss_udp_st_ru
 
 	ts_info = (struct nss_udp_st_timestamp_info *)skb_pull(skb, hdr_sz);
 	do_div(time, 1000000);
-	if (time > ts_info->timestamp) {
-		latency = time - ts_info->timestamp;
-	} else {
-		latency = ts_info->timestamp - time;
+	le_timestamp = be64_to_cpu(ts_info->timestamp);
+	if (time > le_timestamp) {
+		latency = time - le_timestamp;
 	}
 
 	atomic64_add(latency, &nust.stats.total_latency);
@@ -75,7 +75,7 @@ static void nss_udp_st_process_payload(struct sk_buff *skb, struct nss_udp_st_ru
 		atomic64_set(&nust.stats.p_stats.max_latency, latency);
 	}
 
-	nss_udp_st_seq_check(rule, ts_info->seq);
+	nss_udp_st_seq_check(rule, be64_to_cpu(ts_info->seq));
 }
 
 /*
@@ -110,7 +110,7 @@ unsigned int nss_udp_st_rx_ipv4_pre_routing_hook(void *priv, struct sk_buff *skb
 			(rule->dip.ip.ipv4 == ntohl(iph->saddr)) &&
 			(rule->sport == ntohs(uh->dest)) &&
 			(rule->dport == ntohs(uh->source)) ) {
-				if (nust.config.ts_test) {
+				if (nust.config.flags & NSS_UDP_ST_FLAGS_TIMESTAMP) {
 					nss_udp_st_process_payload(skb, rule, NSS_UDP_ST_FLAG_IPV4);
 				}
 				nss_udp_st_update_stats(ntohs(iph->tot_len) + sizeof(struct ethhdr));
@@ -159,7 +159,7 @@ unsigned int nss_udp_st_rx_ipv6_pre_routing_hook(void *priv, struct sk_buff *skb
 			(nss_udp_st_compare_ipv6(rule->dip.ip.ipv6, saddr.s6_addr32)) &&
 			(rule->sport == ntohs(uh->dest)) &&
 			(rule->dport == ntohs(uh->source))) {
-				if (nust.config.ts_test) {
+				if (nust.config.flags & NSS_UDP_ST_FLAGS_TIMESTAMP) {
 					nss_udp_st_process_payload(skb, rule, NSS_UDP_ST_FLAG_IPV6);
 				}
 				nss_udp_st_update_stats(ntohs(iph->payload_len) + sizeof(struct ethhdr));
