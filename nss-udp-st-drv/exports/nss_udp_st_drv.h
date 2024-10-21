@@ -40,7 +40,11 @@
 #define NSS_UDP_ST_IOCTL_START_RX		_IOW(NSS_UDP_ST_IOCTL_MAGIC, 2, int)
 #define NSS_UDP_ST_IOCTL_STOP			_IO(NSS_UDP_ST_IOCTL_MAGIC, 3)
 #define NSS_UDP_ST_IOCTL_RATE_CHANGE		_IOW(NSS_UDP_ST_IOCTL_MAGIC, 4, uint32_t)
+#define NSS_UDP_ST_IOCTL_RESET_STATS		_IO(NSS_UDP_ST_IOCTL_MAGIC, 5)
 #define NSS_UDP_ST_DEV				"/dev/nss_udp_st"
+
+#define NSS_UDP_ST_FLAGS_TIMESTAMP 0x1	/* Flag to enable timestamp */
+#define NSS_UDP_ST_FLAGS_VP 0x2		/* Flag to enable VP */
 
 #ifdef __KERNEL__ /* only kernel will use. */
 #define NSS_UDP_ST_MAX_HEADROOM 32	/* Maximum headroom needed */
@@ -111,7 +115,7 @@ struct nss_udp_st_param {
 	uint32_t rate;		/* target rate in Mbps */
 	uint32_t buffer_sz;	/* buffer size of each packet */
 	uint32_t dscp;		/* dscp flag for tx packet */
-	uint8_t ts_test;	/* timestamp flag */
+	uint8_t flags;		/* flags to enable features without fields */
 	uint32_t cpu_bitmap;	/* CPU bitmap to be used */
 	char net_dev[NSS_UDP_ST_IFNAMSZ];
 				/* net device interface */
@@ -201,6 +205,8 @@ struct nss_udp_st_rules {
 	uint64_t seq;			/* sequence counter */
 	uint64_t seq_greatest;		/* greatest pkt recieved */
 	uint8_t cpu;			/* CPU that this connection runs */
+	struct net_device *tun_dev;	/* Tunnel device mapped to this connection */
+	int32_t vp_num;			/* VP num this connection is mapped to */
 };
 
 /*
