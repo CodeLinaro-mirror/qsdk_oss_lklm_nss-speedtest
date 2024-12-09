@@ -52,6 +52,7 @@ static struct option start_longopt[] = {
 	{"content_type", required_argument, NULL, 'x'},
 	{"file_based", optional_argument, NULL, 'f'},
 	{"time_based", required_argument, NULL, 't'},
+	{"verbose", optional_argument, NULL, 'v'},
 	{0, 0, 0, 0}
 };
 
@@ -108,7 +109,7 @@ static void nss_tcp_st_cli_usage(void)
 	nss_tcp_st_log_info("\nOptions:\n");
 	nss_tcp_st_log_info("-i, --server_ip\t\t< IPv4/v6 address of the server >\n");
 	nss_tcp_st_log_info("-p, --port\t\t< Port number of the server >\n");
-	nss_tcp_st_log_info("-l, --buffer_len\t< Buffer length for download/upload >\n");
+	nss_tcp_st_log_info("-l, --buffer_len\t< Socket buffer length for test >\n");
 	nss_tcp_st_log_info("-g, --type\t\t< Test type: http_download / http_upload >\n");
 	nss_tcp_st_log_info("-a, --file_name\t\t< File name to be uploaded / downloaded >\n");
 	nss_tcp_st_log_info("-s, --file_size\t\t< Size of file to be uploaded in GB >\n");
@@ -116,10 +117,9 @@ static void nss_tcp_st_cli_usage(void)
 	nss_tcp_st_log_info("-c, --core_mask\t\t< Cores to be used for speedtest >\n");
 	nss_tcp_st_log_info("-u, --user_agent\t< HTTP user agent >\n");
 	nss_tcp_st_log_info("-x, --content_type\t< HTTP content type >\n");
-	nss_tcp_st_log_info("-f, --file_based timeout=val\n");
-	nss_tcp_st_log_info("\t\t\t< Timeout value in seconds for file based result capture >\n");
 	nss_tcp_st_log_info("-t, --time_based duration=val,offset=val\n");
 	nss_tcp_st_log_info("\t\t\t< Duration and offset in seconds for time based result capture >\n");
+	nss_tcp_st_log_info("-v, --verbose\t\t< Enable debug logs >\n");
 	nss_tcp_st_log_info("\nStop TCP Speed Test\n");
 	nss_tcp_st_log_info("\tnss-tcp-st [-m | --mode] stop\n");
 	nss_tcp_st_log_info("\nGet TCP Speed Test stats\n");
@@ -195,7 +195,7 @@ static int nss_tcp_st_cli_log_cfg(struct netfn_tcpst_cfg *st_cfg, bool time_base
 	fprintf(fp, "Hdr:%s\nHdr len:%d\n", st_cfg->http.hdr, st_cfg->http.hdr_len);
 	fprintf(fp, "Connections:%d\nCore mask:%d\nOffset:%d\nDuration:%d\n",
 			st_cfg->conn, st_cfg->core_mask, st_cfg->offset, st_cfg->duration);
-	fprintf(fp, "Buffer length:%d\n", st_cfg->buf_len);
+	fprintf(fp, "Buffer length:%ld\n", st_cfg->buf_len);
 	fclose(fp);
 
 	return 0;
@@ -336,6 +336,11 @@ static bool nss_tcp_st_cli_start(int args, char **argv)
 
 			break;
 
+		case 'v':
+			system("echo 8 > /proc/sys/kernel/printk");
+			system("echo \"module qca_nss_netfn_tcpst +p\" > /sys/kernel/debug/dynamic_debug/control");
+			break;
+
 		default:
 			nss_tcp_st_cli_usage();
 			return false;
@@ -386,6 +391,28 @@ static void nss_tcp_st_cli_show_stats(struct netfn_tcpst_stats *stats)
 }
 
 /*
+ * nss_tcp_st_cli_get_offset
+ *      Fetch the offset value passed during start
+ */
+static int nss_tcp_st_cli_get_offset(FILE *fp)
+{
+	char line[100];
+	int offset;
+
+	/*
+	 * Fetch the offset from the tcpst configuration stored
+	 * in /tmp/tcpst during START.
+	 */
+	while (fgets(line, sizeof(line), fp)) {
+		if (sscanf(line, "Offset:%d", &offset) == 1) {
+			return offset;
+		}
+	}
+
+	return -1;
+}
+
+/*
  * nss_tcp_st_cli_completion
  *	Completion callback to print the result
  */
@@ -393,8 +420,10 @@ void nss_tcp_st_cli_completion(void *app_data, struct netfn_tcpst_result *res)
 {
 	double tcp_rtt, resp_time, req_rtt, rate, duration;
 	struct netfn_tcpst_stats *stats = &res->stats;
-	int mode;
+	int offset = 0;
 	FILE *fp;
+
+	nss_tcp_st_cli_show_stats(stats);
 
 	fp = fopen("/tmp/tcpst", "a+");
 	if (!fp) {
@@ -402,7 +431,12 @@ void nss_tcp_st_cli_completion(void *app_data, struct netfn_tcpst_result *res)
 		return;
 	}
 
-	nss_tcp_st_cli_show_stats(stats);
+	offset = nss_tcp_st_cli_get_offset(fp);
+	if (offset < 0) {
+		nss_tcp_st_log_error("%px: Perf metrics cannot be calculated\n", res);
+		fclose(fp);
+		return;
+	}
 
 	nss_tcp_st_log_info("\n\n******************PERF METRICS****************:\n");
 	fprintf(fp, "\n\n******************PERF METRICS****************:\n");
@@ -411,6 +445,7 @@ void nss_tcp_st_cli_completion(void *app_data, struct netfn_tcpst_result *res)
 	resp_time = (double)(stats->http.eom_time - stats->http.rom_time) / 1000000;
 	req_rtt = (double)(stats->http.bom_time - stats->http.rom_time) / 1000000;
 	duration = (double)(stats->http.eom_time - stats->http.bom_time) / 1000000;
+	duration = duration - (offset * 1000);
 
 	nss_tcp_st_log_info("Test Connection Handshake Round Trip Time\t: %f ms\n"
 			"Test Transaction Response Time\t\t\t: %f ms\n"
@@ -519,8 +554,12 @@ int main(int args, char **argv)
 	case 'm':
 		strlcpy(cmd, optarg, sizeof(cmd));
 		if (!strncmp("start", cmd, strlen(cmd))) {
+			system("insmod qca-nss-netfn-tcpst.ko");
+
 			if (!nss_tcp_st_cli_start(args, argv)) {
 				nss_tcp_st_log_error("%px:Failed to start test\n", argv);
+				system("rmmod qca-nss-netfn-tcpst.ko");
+
 				return -EINVAL;
 			}
 
@@ -528,9 +567,16 @@ int main(int args, char **argv)
 		} else if (!strncmp("stop", cmd, strlen(cmd))) {
 			if (!nss_tcp_st_cli_stop(args, argv)) {
 				nss_tcp_st_log_error("%px:Failed to stop test\n", argv);
+				system("rmmod qca-nss-netfn-tcpst.ko");
+
 				return -EINVAL;
 			}
 
+			/*
+			 * Sleep to flush the previous prints
+			 */
+			sleep(1);
+			system("rmmod qca-nss-netfn-tcpst.ko");
 		} else if (!strncmp("stats", cmd, strlen(cmd))) {
 			if (!nss_tcp_st_cli_get_stats(args, argv)) {
 				nss_tcp_st_log_error("%px:Failed to fetch stats\n", argv);
