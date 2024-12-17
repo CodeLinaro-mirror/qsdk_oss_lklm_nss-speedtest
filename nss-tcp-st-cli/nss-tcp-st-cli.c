@@ -110,7 +110,7 @@ static void nss_tcp_st_cli_usage(void)
 	nss_tcp_st_log_info("-i, --server_ip\t\t< IPv4/v6 address of the server >\n");
 	nss_tcp_st_log_info("-p, --port\t\t< Port number of the server >\n");
 	nss_tcp_st_log_info("-l, --buffer_len\t< Socket buffer length for test >\n");
-	nss_tcp_st_log_info("-g, --type\t\t< Test type: http_download / http_upload >\n");
+	nss_tcp_st_log_info("-g, --type\t\t< Test type: http_download / http_upload / raw_download / raw_upload >\n");
 	nss_tcp_st_log_info("-a, --file_name\t\t< File name to be uploaded / downloaded >\n");
 	nss_tcp_st_log_info("-s, --file_size\t\t< Size of file to be uploaded in GB >\n");
 	nss_tcp_st_log_info("-n, --connections\t< Total connections >\n");
@@ -179,7 +179,7 @@ static int nss_tcp_st_cli_log_cfg(struct netfn_tcpst_cfg *st_cfg, bool time_base
 		return -ENOMEM;
 	}
 
-	fprintf(fp, "Test type:%d [1- HTTP upload, 2- HTTP download\n", st_cfg->test);
+	fprintf(fp, "Test type:%d [1- HTTP upload, 2- HTTP download 3- RAW_UPLOAD 4- RAW_DOWNLOAD]\n", st_cfg->test);
 	fprintf(fp, "Result type:%d [0 - File based, 1 - Time based]\n", time_based);
 	fprintf(fp, "IP version:%d\nPort:%d\n", st_cfg->remote.ip_version, ntohs(st_cfg->remote.port));
 
@@ -192,7 +192,10 @@ static int nss_tcp_st_cli_log_cfg(struct netfn_tcpst_cfg *st_cfg, bool time_base
 				ntohl(st_cfg->remote.ip.v6.s6_addr32[3]));
 	}
 
-	fprintf(fp, "Hdr:%s\nHdr len:%d\n", st_cfg->http.hdr, st_cfg->http.hdr_len);
+	if (st_cfg->test == NETFN_TCPST_TEST_HTTP_DOWNLOAD || st_cfg->test == NETFN_TCPST_TEST_HTTP_UPLOAD) {
+		fprintf(fp, "Hdr:%s\nHdr len:%d\n", st_cfg->http.hdr, st_cfg->http.hdr_len);
+	}
+
 	fprintf(fp, "Connections:%d\nCore mask:%d\nOffset:%d\nDuration:%d\n",
 			st_cfg->conn, st_cfg->core_mask, st_cfg->offset, st_cfg->duration);
 	fprintf(fp, "Buffer length:%ld\n", st_cfg->buf_len);
@@ -216,6 +219,8 @@ static bool nss_tcp_st_cli_start(int args, char **argv)
 	enum netfn_tcpst_state state;
 	char ip[INET6_ADDRSTRLEN];
 	bool time_based = false;
+	bool http = false;
+	size_t file_size;
 
 	memset(&st_cfg, 0, sizeof(st_cfg));
 	nss_tcp_st_cli_get_short_option(start_longopt, start_shortopt);
@@ -260,14 +265,16 @@ static bool nss_tcp_st_cli_start(int args, char **argv)
 			break;
 
 		case 's':
-			st_cfg.http.file_sz = (uint64_t)(atoi(optarg)) * NSS_TCPST_CL_GB_TO_BYTES;
+			file_size = (uint64_t)(atoi(optarg)) * NSS_TCPST_CL_GB_TO_BYTES;
 			break;
 
 		case 'g':
 			if (!strncmp("http_download", optarg, 13)) {
 				st_cfg.test = NETFN_TCPST_TEST_HTTP_DOWNLOAD;
+				http = true;
 			} else if (!strncmp("http_upload", optarg, 11)) {
 				st_cfg.test = NETFN_TCPST_TEST_HTTP_UPLOAD;
+				http = true;
 			} else if (!strncmp("raw_download", optarg, 12)) {
 				st_cfg.test = NETFN_TCPST_TEST_RAW_DOWNLOAD;
 			} else if (!strncmp("raw_upload", optarg, 10)) {
@@ -347,10 +354,15 @@ static bool nss_tcp_st_cli_start(int args, char **argv)
 		}
 	}
 
-	error = nss_tcp_st_cli_set_http_header(&st_cfg, ip, file_name, user_agent, content_type);
-	if (error) {
-		nss_tcp_st_log_error("%px:Failed to parse http header\n", argv);
-		return false;
+	if (http) {
+		st_cfg.http.file_sz = file_size;
+
+		if (nss_tcp_st_cli_set_http_header(&st_cfg, ip, file_name, user_agent, content_type)) {
+			nss_tcp_st_log_error("%px:Failed to parse http header\n", argv);
+			return false;
+		}
+	} else {
+		st_cfg.raw.max_bytes = file_size;
 	}
 
 	st_cfg.buf_len = !st_cfg.buf_len ? NSS_TCPST_CLI_BUF_LEN : st_cfg.buf_len;
@@ -381,9 +393,9 @@ static void nss_tcp_st_cli_show_stats(struct netfn_tcpst_stats *stats)
 			"eth_bytes_rcvd\t\t: %lu bytes\n",
 			stats->tcp_open.request_time,
 			stats->tcp_open.response_time,
-			stats->http.bom_time,
-			stats->http.rom_time,
-			stats->http.eom_time,
+			stats->test.bom_time,
+			stats->test.rom_time,
+			stats->test.eom_time,
 			stats->test_bytes.sent,
 			stats->test_bytes.rcvd,
 			stats->eth_bytes.sent,
@@ -442,9 +454,9 @@ void nss_tcp_st_cli_completion(void *app_data, struct netfn_tcpst_result *res)
 	fprintf(fp, "\n\n******************PERF METRICS****************:\n");
 
 	tcp_rtt = (double)(stats->tcp_open.response_time - stats->tcp_open.request_time) / 1000000;
-	resp_time = (double)(stats->http.eom_time - stats->http.rom_time) / 1000000;
-	req_rtt = (double)(stats->http.bom_time - stats->http.rom_time) / 1000000;
-	duration = (double)(stats->http.eom_time - stats->http.bom_time) / 1000000;
+	resp_time = (double)(stats->test.eom_time - stats->test.rom_time) / 1000000;
+	req_rtt = (double)(stats->test.bom_time - stats->test.rom_time) / 1000000;
+	duration = (double)(stats->test.eom_time - stats->test.bom_time) / 1000000;
 	duration = duration - (offset * 1000);
 
 	nss_tcp_st_log_info("Test Connection Handshake Round Trip Time\t: %f ms\n"
