@@ -32,8 +32,42 @@ struct nss_tcp_st_sk {
 	int family_id;
 };
 
+/**
+ * nss_tcp_st_start()
+ *      Starts the TCP Speedtest
+ *
+ * @cfg[in] TCP speedtest configuration
+ *
+ * @return
+ * 0 if test is started, error in case of failure
+ */
 int nss_tcp_st_start(struct netfn_tcpst_cfg *cfg);
+
+/**
+ * nss_tcp_st_stop()
+ *	Stops the TCP Speedtest
+ *	Test will abort if stop is issued before test completion
+ *	Status of test can be retrieved using nss_tcpst_get_stats()
+ *
+ * @cb[in] Callback called on completion
+ * @void*[in] Application data
+ *
+ * @return
+ * 0 if test is stopped, error in case of failure
+ */
 int nss_tcp_st_stop(netfn_tcpst_comp_t completion_cb, void *app_data);
+
+/**
+ * nss_tcp_st_get_stats()
+ *	Returns the TCP stats
+ *	User has to poll via this API for test completion
+ *
+ * @stats[in] Pointer to user allocated memory for statistics retrieval
+ * @state[in] Pointer to user allocated memory for current Test state
+ *
+ * @return
+ * 0 on successful retrieval of statistics, error in case of failure
+ */
 int nss_tcp_st_get_stats(struct netfn_tcpst_stats *stats, enum netfn_tcpst_state *state);
 
 #endif /*__NSS_TCP_ST_H*/
