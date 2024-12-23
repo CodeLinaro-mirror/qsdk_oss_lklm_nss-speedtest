@@ -58,10 +58,6 @@ static struct option start_longopt[] = {
 
 char *time_subopts[] = {"duration", "offset", NULL};
 
-static struct option stop_longopt[] = {
-	{0, 0, 0, 0}
-};
-
 /*
  * nss_tcp_st_cli_get_short_option
  *	Derive short opstring from long_options
@@ -216,11 +212,10 @@ static bool nss_tcp_st_cli_start(int args, char **argv)
 	char file_name[NSS_TCPST_CLI_CFG_MAX_LEN];
 	int option_index = 0, error, opt = 0;
 	struct netfn_tcpst_cfg st_cfg;
-	enum netfn_tcpst_state state;
 	char ip[INET6_ADDRSTRLEN];
 	bool time_based = false;
+	size_t file_size = 0;
 	bool http = false;
-	size_t file_size;
 
 	memset(&st_cfg, 0, sizeof(st_cfg));
 	nss_tcp_st_cli_get_short_option(start_longopt, start_shortopt);
@@ -556,7 +551,7 @@ static bool nss_tcp_st_cli_get_stats(int args, char **argv)
 int main(int args, char **argv)
 {
 	char primary_shortopt[NSS_TCPST_CLI_MAX_OPT];
-	int error, opt, option_index = 0;
+	int opt, option_index = 0;
 	char cmd[8];
 
 	nss_tcp_st_cli_get_short_option(primary_longopt, primary_shortopt);

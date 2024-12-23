@@ -9,7 +9,8 @@ HEADERS = $(wildcard $(SRCDIR)/*.h)
 OBJECTS = $(SOURCES:$(SRCDIR)/%.c=$(OBJPATH)/%.o)
 
 INCLUDE += -I./include
-EXTRA_LDFLAGS = -lnl-genl-3 -lcurl -lnl-tcpst
+EXTRA_CFLAGS = -Wall -Werror -fpie -Wl,-z,relro -Wl,-z,now
+EXTRA_LDFLAGS = -lnl-genl-3 -lnl-tcpst -pie -Wl,-z,relro -Wl,-z,now
 
 all: release
 
