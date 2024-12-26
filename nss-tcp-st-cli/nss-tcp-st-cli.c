@@ -146,7 +146,7 @@ static int nss_tcp_st_cli_set_http_header(struct netfn_tcpst_cfg *st_cfg, char *
 	} else {
 		ret = snprintf(st_cfg->http.hdr, NETFN_TCPST_HTTP_HDR_MAX, "PUT /%s HTTP/1.1\r\n"
 				"Host: %s:%u\r\n"
-				"Content-Length: %lu\r\n"
+				"Content-Length: %zu\r\n"
 				"Content-Type: %s\r\n\r\n",
 				file_name, ip, ntohs(st_cfg->remote.port), st_cfg->http.file_sz, content_type);
 
@@ -194,7 +194,7 @@ static int nss_tcp_st_cli_log_cfg(struct netfn_tcpst_cfg *st_cfg, bool time_base
 
 	fprintf(fp, "Connections:%d\nCore mask:%d\nOffset:%d\nDuration:%d\n",
 			st_cfg->conn, st_cfg->core_mask, st_cfg->offset, st_cfg->duration);
-	fprintf(fp, "Buffer length:%ld\n", st_cfg->buf_len);
+	fprintf(fp, "Buffer length:%"PRIu64"\n", st_cfg->buf_len);
 	fclose(fp);
 
 	return 0;
@@ -377,15 +377,15 @@ static bool nss_tcp_st_cli_start(int args, char **argv)
  */
 static void nss_tcp_st_cli_show_stats(struct netfn_tcpst_stats *stats)
 {
-	nss_tcp_st_log_info("tcp_open_request_time\t: %lu ns\n"
-			"tcp_open_response_time\t: %lu ns\n"
-			"bom_time\t\t: %lu ns\n"
-			"rom_time\t\t: %lu ns\n"
-			"eom_time\t\t: %lu ns\n"
-			"test_bytes_sent\t\t: %lu bytes\n"
-			"test_bytes_received\t: %lu bytes\n"
-			"eth_bytes_sent\t\t: %lu bytes\n"
-			"eth_bytes_rcvd\t\t: %lu bytes\n",
+	nss_tcp_st_log_info("tcp_open_request_time\t: %"PRIu64" ns\n"
+			"tcp_open_response_time\t: %"PRIu64" ns\n"
+			"bom_time\t\t: %"PRIu64" ns\n"
+			"rom_time\t\t: %"PRIu64" ns\n"
+			"eom_time\t\t: %"PRIu64" ns\n"
+			"test_bytes_sent\t\t: %"PRIu64" bytes\n"
+			"test_bytes_received\t: %"PRIu64" bytes\n"
+			"eth_bytes_sent\t\t: %"PRIu64" bytes\n"
+			"eth_bytes_rcvd\t\t: %"PRIu64" bytes\n",
 			stats->tcp_open.request_time,
 			stats->tcp_open.response_time,
 			stats->test.bom_time,
