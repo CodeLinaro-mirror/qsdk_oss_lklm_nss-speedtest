@@ -25,6 +25,7 @@
 #include <stdbool.h>
 #include <arpa/inet.h>
 #include <curl/curl.h>
+#include <inttypes.h>
 #include "nss-tcp-st.h"
 
 #define NSS_TCPST_CL_GB_TO_BYTES 1000000000
@@ -561,7 +562,7 @@ int main(int args, char **argv)
 	case 'm':
 		strlcpy(cmd, optarg, sizeof(cmd));
 		if (!strncmp("start", cmd, strlen(cmd))) {
-			system("insmod qca-nss-netfn-tcpst.ko");
+			system("modprobe qca-nss-netfn-tcpst");
 
 			if (!nss_tcp_st_cli_start(args, argv)) {
 				nss_tcp_st_log_error("%px:Failed to start test\n", argv);
