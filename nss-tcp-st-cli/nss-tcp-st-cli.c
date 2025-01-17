@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2024-2025 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -31,7 +31,6 @@
 #define NSS_TCPST_CL_GB_TO_BYTES 1000000000
 #define NSS_TCPST_CLI_CFG_MAX_LEN 64
 #define NSS_TCPST_CLI_MAX_OPT 64
-#define NSS_TCPST_CLI_BUF_LEN (128 * 1024)
 
 static struct option primary_longopt[] =
 {
@@ -361,7 +360,7 @@ static bool nss_tcp_st_cli_start(int args, char **argv)
 		st_cfg.raw.max_bytes = file_size;
 	}
 
-	st_cfg.buf_len = !st_cfg.buf_len ? NSS_TCPST_CLI_BUF_LEN : st_cfg.buf_len;
+	st_cfg.buf_len = !st_cfg.buf_len ? NETFN_TCPST_BUF_LEN : st_cfg.buf_len;
 
 	error = nss_tcp_st_cli_log_cfg(&st_cfg, time_based);
 	if (error) {
