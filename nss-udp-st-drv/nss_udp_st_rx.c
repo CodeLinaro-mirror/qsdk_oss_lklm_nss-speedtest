@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2025 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -109,7 +109,7 @@ unsigned int nss_udp_st_rx_ipv4_pre_routing_hook(void *priv, struct sk_buff *skb
 			(rule->sip.ip.ipv4 == ntohl(iph->daddr)) &&
 			(rule->dip.ip.ipv4 == ntohl(iph->saddr)) &&
 			(rule->sport == ntohs(uh->dest)) &&
-			(rule->dport == ntohs(uh->source)) ) {
+			(rule->dport == ntohs(uh->source) || rule->dport == 0)) {
 				if (nust.config.flags & NSS_UDP_ST_FLAGS_TIMESTAMP) {
 					nss_udp_st_process_payload(skb, rule, NSS_UDP_ST_FLAG_IPV4);
 				}
@@ -158,7 +158,7 @@ unsigned int nss_udp_st_rx_ipv6_pre_routing_hook(void *priv, struct sk_buff *skb
 			(nss_udp_st_compare_ipv6(rule->sip.ip.ipv6, daddr.s6_addr32)) &&
 			(nss_udp_st_compare_ipv6(rule->dip.ip.ipv6, saddr.s6_addr32)) &&
 			(rule->sport == ntohs(uh->dest)) &&
-			(rule->dport == ntohs(uh->source))) {
+			(rule->dport == ntohs(uh->source) || rule->dport == 0)) {
 				if (nust.config.flags & NSS_UDP_ST_FLAGS_TIMESTAMP) {
 					nss_udp_st_process_payload(skb, rule, NSS_UDP_ST_FLAG_IPV6);
 				}
