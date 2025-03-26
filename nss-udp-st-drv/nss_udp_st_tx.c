@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2025 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -762,6 +762,8 @@ bool nss_udp_st_tx_rate_change(uint32_t rate)
 static bool nss_udp_st_tx_init(void)
 {
 	uint64_t total_bps;
+	struct nss_udp_st_rules *pos = NULL;
+	struct nss_udp_st_rules *n = NULL;
 
 	if (nust.config.rate > NSS_UDP_ST_RATE_MAX) {
 		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_RATE]);
@@ -776,6 +778,16 @@ static bool nss_udp_st_tx_init(void)
 	if (nust.config.buffer_sz > NSS_UDP_ST_BUFFER_SIZE_MAX) {
 		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_BUFFER_SIZE]);
 		return false;
+	}
+
+	/*
+	 * Check all ports are specified
+	 */
+	list_for_each_entry_safe(pos, n, &nust.rules.list, list) {
+		if (pos->sport == 0 || pos->dport == 0) {
+			pr_err("Unable to tx with arbitrary ports: sport = %u, dport = %u", pos->sport, pos->dport);
+			return false;
+		}
 	}
 
 	/*
