@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2025 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -260,7 +260,10 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 
 		max_bitmap = (1 << NR_CPUS) - 1;
 		nust.bitmap_curr = nust.config.cpu_bitmap;
-		if (nust.bitmap_curr == 0 || nust.bitmap_curr > max_bitmap) {
+		if (nust.bitmap_curr == 0) {
+			pr_info("Setting default TX CPU to CPU 0");
+			nust.bitmap_curr = 1;
+		} else if (nust.bitmap_curr > max_bitmap) {
 			pr_err("Incorrect bitmap: %u\n", nust.bitmap_curr);
 			return -EINVAL;
 		}
