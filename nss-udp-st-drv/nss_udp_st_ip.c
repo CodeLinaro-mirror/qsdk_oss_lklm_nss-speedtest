@@ -28,6 +28,7 @@
 #include <net/route.h>
 #include <net/ip6_route.h>
 #include "nss_udp_st_ip.h"
+#include "nss_udp_st_public.h"
 
 #define NSS_UDP_ST_IPV4_SIZE	sizeof(struct in_addr)
 #define NSS_UDP_ST_IPV6_SIZE	sizeof(struct in6_addr)
@@ -69,7 +70,7 @@ int nss_udp_st_get_ipaddr_ntoh(const char *arg, uint16_t data_sz, uint32_t *data
 		return 0;
 
 	default:
-		pr_err("IP address storage incorrect:%d\n", data_sz);
+		udp_st_err("IP address storage incorrect:%d\n", data_sz);
 		return -E2BIG;
     }
 }
@@ -146,23 +147,23 @@ int nss_udp_st_get_macaddr_ipv4(uint32_t ip_addr, uint8_t mac_addr[])
 	neigh = nss_udp_st_get_neigh_ipv4(htonl(ip_addr));
 	if (!neigh) {
 		rcu_read_unlock();
-		pr_err("neighbour lookup failed for IP:0x%x\n", ip_addr);
+		udp_st_err("neighbour lookup failed for IP:0x%x\n", ip_addr);
 		return -ENODEV;
 	}
 	rcu_read_unlock();
 
 	if ((neigh->nud_state & NUD_VALID) == 0) {
-		pr_err("neighbour state is invalid for IP:0x%x\n", ip_addr);
+		udp_st_err("neighbour state is invalid for IP:0x%x\n", ip_addr);
 		goto fail;
 	}
 
 	if (!neigh->dev) {
-		pr_err("neighbour device not found for IP:0x%x\n", ip_addr);
+		udp_st_err("neighbour device not found for IP:0x%x\n", ip_addr);
 		goto fail;
 	}
 
 	if (is_multicast_ether_addr(neigh->ha)) {
-		pr_err( "neighbour MAC address is multicast or broadcast\n");
+		udp_st_err( "neighbour MAC address is multicast or broadcast\n");
 		goto fail;
 	}
 
@@ -264,23 +265,23 @@ int nss_udp_st_get_macaddr_ipv6(uint32_t ip_addr[4], uint8_t mac_addr[])
 	neigh = nss_udp_st_get_neigh_ipv6(addr.s6_addr32);
 	if (!neigh) {
 		rcu_read_unlock();
-		pr_info("neighbour lookup failed for %pI6c\n", addr.s6_addr32);
+		udp_st_trace("neighbour lookup failed for %pI6c\n", addr.s6_addr32);
 		return -ENODEV;
 	}
 	rcu_read_unlock();
 
 	if ((neigh->nud_state & NUD_VALID) == 0) {
-		pr_err("neighbour state is invalid for %pI6c\n", addr.s6_addr32);
+		udp_st_err("neighbour state is invalid for %pI6c\n", addr.s6_addr32);
 		goto fail;
 	}
 
 	if (!neigh->dev) {
-		pr_err("neighbour device not found for %pI6c\n", addr.s6_addr32);
+		udp_st_err("neighbour device not found for %pI6c\n", addr.s6_addr32);
 		goto fail;
 	}
 
 	if (is_multicast_ether_addr(neigh->ha)) {
-		pr_err("neighbour MAC address is multicast or broadcast\n");
+		udp_st_err("neighbour MAC address is multicast or broadcast\n");
 		goto fail;
 	}
 

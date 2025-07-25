@@ -29,6 +29,7 @@
 #define NSS_UDP_ST_IOCTL_STOP			_IO(NSS_UDP_ST_IOCTL_MAGIC, 3)
 #define NSS_UDP_ST_IOCTL_RATE_CHANGE		_IOW(NSS_UDP_ST_IOCTL_MAGIC, 4, uint32_t)
 #define NSS_UDP_ST_IOCTL_RESET_STATS		_IO(NSS_UDP_ST_IOCTL_MAGIC, 5)
+#define NSS_UDP_ST_IOCTL_FINAL			_IO(NSS_UDP_ST_IOCTL_MAGIC, 6)
 #define NSS_UDP_ST_DEV				"/dev/nss_udp_st"
 
 #define NSS_UDP_ST_FLAGS_TIMESTAMP 0x1	/* Flag to enable timestamp */
@@ -48,6 +49,8 @@ extern struct workqueue_struct *work_queue;
 extern void nss_udp_st_update_stats(size_t pkt_size, uint64_t num_pkts);
 extern uint64_t nss_udp_st_tx_num_pkt;
 extern struct net_device *nust_dev;
+extern struct nss_udp_st_rules *exception_dport_rules;
+extern uint8_t exception_rules_cnt;
 #endif
 
 /*
@@ -126,10 +129,10 @@ struct nss_udp_st_opt {
 
 #ifdef __KERNEL__ /* only kernel will use. */
 /*
- * nss_udp_st_ppoee_info
+ * nss_udp_st_pppoe_info
  *	PPPoE header information
  */
-struct nss_udp_st_ppoee_info {
+struct nss_udp_st_pppoe_info {
 	struct net_device *dev;			/* Base Net device */
 	uint16_t pppoe_session_id;		/* PPPoE session ID on this interface */
 	uint8_t remote_mac[ETH_ALEN];		/* MAC Address of the PPPoE concentrator */
@@ -192,6 +195,7 @@ struct nss_udp_st_stats {
 	atomic64_t timer_stats[NSS_UDP_ST_STATS_TIME_MAX];	/* Time statistics */
 	atomic64_t errors[NSS_UDP_ST_ERROR_MAX];		/* Error statistics */
 	atomic64_t total_latency;				/* Total Latency */
+	atomic64_t rx_exception_pkt_cnt;			/* Exception rx packet without RFS rule match */
 	bool first_pkt;						/* First packet flag */
 };
 
@@ -214,7 +218,7 @@ struct nss_udp_st_rules {
 	struct nss_udp_st_ip dip;	/* dest ip */
 	uint16_t sport;			/* source port */
 	uint16_t dport;			/* dest port */
-	uint16_t flags;			/* version of IP address */
+	uint8_t ip_version;		/* version of IP address */
 	uint8_t dst_mac[ETH_ALEN];	/* dest mac */
 	uint64_t seq;			/* sequence counter */
 	uint64_t seq_greatest;		/* greatest pkt recieved */
@@ -226,6 +230,7 @@ struct nss_udp_st_rules {
 	uint32_t policer_rule_id;	/* Per-flow policer rule ID */
 	uint64_t policer_prev_rpc;	/* Previous cumulative red-packet count for delta calculation */
 	uint16_t bridge_vlan_id;	/* VLAN ID if bridge port is a VLAN device (0 if not VLAN) */
+	uint32_t rule_id;		/* rule id of the rule */
 };
 
 /*
@@ -236,13 +241,14 @@ struct nss_udp_st {
 	struct nss_udp_st_param config;	/* config params for tx */
 	struct nss_udp_st_rules rules;	/* database for config rules */
 	struct nss_udp_st_stats stats;	/* result statistics */
-	struct nss_udp_st_ppoee_info pppoe_info;	/* PPPoE session information */
+	struct nss_udp_st_pppoe_info pppoe_info;	/* PPPoE session information */
 	uint32_t rule_count;		/* no of rules configured */
 	uint32_t time;			/* duration of test */
 	uint32_t bitmap_curr;		/* temp variable to see assignment map */
 	bool mode;			/* start =0; stop=1 */
 	bool dir;			/* tx=0; rx=1 */
 	atomic_t xmit_idx;		/* Index for EDMA descriptor assignment for HW offload */
+	int32_t dummy_vp_num;		/* dummy vp for configuring RFS at rx */
 };
 #endif
 

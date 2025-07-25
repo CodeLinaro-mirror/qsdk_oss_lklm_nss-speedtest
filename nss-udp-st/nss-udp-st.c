@@ -65,9 +65,17 @@ static int nss_udp_st_init(void)
  * nss_udp_st_final()
  *	Unload nss speedtest driver
  */
-static void nss_udp_st_final(void)
+static int nss_udp_st_final(void)
 {
-	system("rmmod nss-udp-st.ko");
+	int ret = 0;
+
+	ret = ioctl(st_cfg.handle, NSS_UDP_ST_IOCTL_FINAL);
+	if (ret < 0) {
+		printf("ioctl error %d\n", ret);
+		return -EINVAL;
+	}
+
+	return 0;
 }
 
 /*
@@ -599,7 +607,11 @@ int main(int args, char **argv)
 		nss_udp_st_init();
 		close(st_cfg.handle);
 	} else if (!strcmp(st_cfg.mode,"final")) {
+		st_cfg.handle = open(NSS_UDP_ST_DEV, O_RDWR);
 		nss_udp_st_final();
+		close(st_cfg.handle);
+		sleep(1);
+		system("rmmod nss-udp-st.ko");
 	} else if (!strcmp(st_cfg.mode,"create")) {
 		nss_udp_st_create();
 	} else if (!strcmp(st_cfg.mode,"list")) {

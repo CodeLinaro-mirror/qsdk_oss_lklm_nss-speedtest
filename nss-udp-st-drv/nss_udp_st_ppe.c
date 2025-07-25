@@ -1378,9 +1378,9 @@ int nss_udp_st_ppe_create_flows(nss_udp_st_ppe_dir_t dir)
 	}
 
 	list_for_each_entry_safe(rule, n, &nust.rules.list, list) {
-		if (rule->flags & NSS_UDP_ST_FLAG_IPV4) {
+		if (rule->ip_version & NSS_UDP_ST_FLAG_IPV4) {
 			ret = nss_udp_st_ppe_create_flow_v4(rule, dir);
-		} else if (rule->flags & NSS_UDP_ST_FLAG_IPV6) {
+		} else if (rule->ip_version & NSS_UDP_ST_FLAG_IPV6) {
 			ret = nss_udp_st_ppe_create_flow_v6(rule, dir);
 		} else {
 			pr_err("UDP-ST: invalid rule type at rule %d\n", count);
@@ -1415,7 +1415,7 @@ void nss_udp_st_destroy_ppe_flow(struct nss_udp_st_rules *rules)
 {
 	ppe_drv_ret_t ret;
 
-	if (rules->flags & NSS_UDP_ST_FLAG_IPV4) {
+	if (rules->ip_version & NSS_UDP_ST_FLAG_IPV4) {
 		struct ppe_drv_v4_rule_destroy destroy;
 
 		memset(&destroy, 0, sizeof(destroy));
@@ -1433,7 +1433,7 @@ void nss_udp_st_destroy_ppe_flow(struct nss_udp_st_rules *rules)
 				&rules->sip.ip.ipv4, rules->sport,
 				&rules->dip.ip.ipv4, rules->dport);
 		}
-	} else if (rules->flags & NSS_UDP_ST_FLAG_IPV6) {
+	} else if (rules->ip_version & NSS_UDP_ST_FLAG_IPV6) {
 		struct ppe_drv_v6_rule_destroy destroy;
 
 		memset(&destroy, 0, sizeof(destroy));
@@ -1573,7 +1573,7 @@ static void nss_udp_st_ppe_throughput_work_fn(struct work_struct *work)
 		delta_bytes = 0;
 		delta_pkts = 0;
 
-		if (pos->flags & NSS_UDP_ST_FLAG_IPV4) {
+		if (pos->ip_version & NSS_UDP_ST_FLAG_IPV4) {
 			if (nss_udp_st_ppe_query_flow_stats_v4(pos,
 							       &delta_bytes,
 							       &delta_pkts,
@@ -1581,7 +1581,7 @@ static void nss_udp_st_ppe_throughput_work_fn(struct work_struct *work)
 				total_delta_bytes += delta_bytes;
 				total_delta_pkts  += delta_pkts;
 			}
-		} else if (pos->flags & NSS_UDP_ST_FLAG_IPV6) {
+		} else if (pos->ip_version & NSS_UDP_ST_FLAG_IPV6) {
 			if (nss_udp_st_ppe_query_flow_stats_v6(pos,
 							       &delta_bytes,
 							       &delta_pkts,

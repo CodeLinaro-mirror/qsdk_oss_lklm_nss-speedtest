@@ -90,10 +90,10 @@ static void nss_udp_st_generate_udp_hdr(struct udphdr *uh, uint16_t udp_len, str
 	uh->len = htons(udp_len);
 	uh->check = 0;
 
-	if (rules->flags & NSS_UDP_ST_FLAG_IPV4) {
+	if (rules->ip_version == NSS_UDP_ST_FLAG_IPV4) {
 		uh->check = csum_tcpudp_magic(htonl(rules->sip.ip.ipv4), htonl(rules->dip.ip.ipv4), udp_len, IPPROTO_UDP,
 		csum_partial(uh, udp_len, 0));
-	} else if (rules->flags & NSS_UDP_ST_FLAG_IPV6) {
+	} else if (rules->ip_version == NSS_UDP_ST_FLAG_IPV6) {
 		struct in6_addr saddr;
 		struct in6_addr daddr;
 
@@ -208,6 +208,10 @@ static void nss_udp_st_tx_packets_vp(struct net_device *ndev, struct nss_udp_st_
 	struct sk_buff *skb;
 	size_t skb_sz;
 	size_t pkt_sz;
+	uint16_t udp_len;
+	struct udphdr *uh;
+	struct iphdr *iph;
+	struct ipv6hdr *ipv6h;
 
 	pkt_sz = nust.config.buffer_sz;
 	skb_sz = NSS_UDP_ST_MIN_HEADROOM + pkt_sz + sizeof(struct ethhdr) + NSS_UDP_ST_MIN_TAILROOM + SMP_CACHE_BYTES;
@@ -218,11 +222,20 @@ static void nss_udp_st_tx_packets_vp(struct net_device *ndev, struct nss_udp_st_
 		return;
 	}
 
+	if (rules->ip_version == NSS_UDP_ST_FLAG_IPV4) {
+                udp_len = pkt_sz - sizeof(*iph);
+        } else if (rules->ip_version == NSS_UDP_ST_FLAG_IPV6) {
+                udp_len = pkt_sz - sizeof(*ipv6h);
+        } else {
+                atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_IP_VERSION]);
+                return;
+        }
+
 	if (nust.config.flags & NSS_UDP_ST_FLAGS_TIMESTAMP) {
 		nss_udp_st_add_seq_tstamp(skb, rules);
-		skb_put(skb, pkt_sz - sizeof(struct nss_udp_st_timestamp_info));
+		skb_put(skb, udp_len - sizeof(struct nss_udp_st_timestamp_info) - sizeof(*uh));
 	} else {
-		skb_put(skb, pkt_sz);
+		skb_put(skb, udp_len - sizeof(*uh));
 	}
 
 	/*
@@ -231,12 +244,12 @@ static void nss_udp_st_tx_packets_vp(struct net_device *ndev, struct nss_udp_st_
 	skb->dev = rules->tun_dev;
 
 	if (!ppe_vp_tx_to_vp(rules->vp_num, skb)) {
-		pr_err("Dropping skb %pxd, edma failed to enqueue to PPE tun dev %p", skb, rules->tun_dev);
+		udp_st_err("Dropping skb %pxd, edma failed to enqueue to PPE tun dev %p", skb, rules->tun_dev);
 		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_PACKET_DROP]);
 		return;
 	}
 
-	nss_udp_st_update_stats(pkt_sz, 1);
+	nss_udp_st_update_stats(pkt_sz + sizeof(struct ethhdr), 1);
 }
 #endif
 
@@ -261,9 +274,9 @@ static void nss_udp_st_tx_packets_ppe_vp(struct net_device *ndev, struct nss_udp
 	pkt_sz = nust.config.buffer_sz;
 	ip_len = pkt_sz;
 
-	if (rules->flags & NSS_UDP_ST_FLAG_IPV4) {
+	if (rules->ip_version & NSS_UDP_ST_FLAG_IPV4) {
 		udp_len = pkt_sz - sizeof(*iph);
-	} else if (rules->flags & NSS_UDP_ST_FLAG_IPV6) {
+	} else if (rules->ip_version & NSS_UDP_ST_FLAG_IPV6) {
 		udp_len = pkt_sz - sizeof(*ipv6h);
 	} else {
 		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_IP_VERSION]);
@@ -294,7 +307,7 @@ static void nss_udp_st_tx_packets_ppe_vp(struct net_device *ndev, struct nss_udp
 	uh = udp_hdr(skb);
 	nss_udp_st_generate_udp_hdr(uh, udp_len, rules);
 
-	if (rules->flags & NSS_UDP_ST_FLAG_IPV4) {
+	if (rules->ip_version & NSS_UDP_ST_FLAG_IPV4) {
 		skb_push(skb, sizeof(*iph));
 		skb_reset_network_header(skb);
 		iph = ip_hdr(skb);
@@ -362,9 +375,9 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 	pkt_sz = nust.config.buffer_sz;
 	ip_len = pkt_sz;
 
-	if (rules->flags & NSS_UDP_ST_FLAG_IPV4) {
+	if (rules->ip_version == NSS_UDP_ST_FLAG_IPV4) {
 		udp_len = pkt_sz - sizeof(*iph);
-	} else if (rules->flags & NSS_UDP_ST_FLAG_IPV6) {
+	} else if (rules->ip_version == NSS_UDP_ST_FLAG_IPV6) {
 		udp_len = pkt_sz - sizeof(*ipv6h);
 	} else {
 		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_IP_VERSION]);
@@ -390,10 +403,10 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 		payload_sz = sizeof(struct nss_udp_st_timestamp_info);
 	}
 
-	if (rules->flags & NSS_UDP_ST_FLAG_IPV4) {
+	if (rules->ip_version & NSS_UDP_ST_FLAG_IPV4) {
 		data = skb_put(skb, pkt_sz - sizeof(*iph) - sizeof(*uh) - payload_sz);
 		memset(data, 0, pkt_sz - sizeof(*iph) - sizeof(*uh) - payload_sz);
-	} else if (rules->flags & NSS_UDP_ST_FLAG_IPV6) {
+	} else if (rules->ip_version & NSS_UDP_ST_FLAG_IPV6) {
 		data = skb_put(skb, pkt_sz - sizeof(*ipv6h) - sizeof(*uh) - payload_sz);
 		memset(data, 0, pkt_sz - sizeof(*ipv6h) - sizeof(*uh) - payload_sz);
 	} else {
@@ -413,12 +426,12 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 	/*
 	 * populate ipv4 or ipv6 header
 	 */
-	if (rules->flags & NSS_UDP_ST_FLAG_IPV4) {
+	if (rules->ip_version == NSS_UDP_ST_FLAG_IPV4) {
 		skb_push(skb, sizeof(*iph));
 		skb_reset_network_header(skb);
 		iph = ip_hdr(skb);
 		nss_udp_st_generate_ipv4_hdr(iph, ip_len, rules);
-	} else if (rules->flags & NSS_UDP_ST_FLAG_IPV6) {
+	} else if (rules->ip_version == NSS_UDP_ST_FLAG_IPV6) {
 		skb_push(skb, sizeof(*ipv6h));
 		skb_reset_network_header(skb);
 		ipv6h = ipv6_hdr(skb);
@@ -427,16 +440,18 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 
 	switch (ndev->type) {
 	case ARPHRD_PPP:
-		if (rules->flags & NSS_UDP_ST_FLAG_IPV4) {
+		if (rules->ip_version == NSS_UDP_ST_FLAG_IPV4) {
 			ppp_protocol = PPP_IP;
 		} else {
 			ppp_protocol = PPP_IPV6;
 		}
 
 		nss_udp_st_generate_pppoe_hdr(skb, ppp_protocol);
+		pkt_sz += NSS_UDP_ST_PPPOE_OVERHEAD;
 
 		if(is_vlan_dev(info.dev)) {
 			nss_udp_st_generate_vlan_hdr(skb, info.dev);
+			pkt_sz += NSS_UDP_ST_VLAN_OVERHEAD;
 		}
 
 		/*
@@ -446,7 +461,7 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 		break;
 
 	case ARPHRD_ETHER:
-		if (rules->flags & NSS_UDP_ST_FLAG_IPV4) {
+		if (rules->ip_version ==  NSS_UDP_ST_FLAG_IPV4) {
 			skb->protocol = htons(ETH_P_IP);
 		} else {
 			skb->protocol = htons(ETH_P_IPV6);
@@ -454,6 +469,7 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 
 		if(is_vlan_dev(ndev)) {
 			nss_udp_st_generate_vlan_hdr(skb, ndev);
+			pkt_sz += NSS_UDP_ST_VLAN_OVERHEAD;
 		}
 
 		/*
@@ -477,7 +493,7 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 		return;
 	}
 
-	nss_udp_st_update_stats(ip_len + sizeof(struct ethhdr), 1);
+	nss_udp_st_update_stats(pkt_sz + sizeof(struct ethhdr), 1);
 }
 
 /*
@@ -488,7 +504,7 @@ static bool nss_udp_st_set_dev(void)
 {
 	nust_dev = dev_get_by_name(&init_net, nust.config.net_dev);
 	if (!nust_dev) {
-		pr_err("Cannot find the net device\n");
+		udp_st_err("Cannot find the net device\n");
 		return false;
 	}
 
@@ -518,7 +534,7 @@ static int nss_udp_st_vlan_iface_config(struct net_device *dev)
 {
 	xmit_dev = vlan_dev_next_dev(dev);
 	if (!xmit_dev) {
-		pr_err("Cannot find the physical net device\n");
+		udp_st_err("Cannot find the physical net device\n");
 		return -1;
 	}
 
@@ -529,7 +545,7 @@ static int nss_udp_st_vlan_iface_config(struct net_device *dev)
 #else
 	if (is_vlan_dev(xmit_dev) || xmit_dev->type != ARPHRD_ETHER) {
 #endif
-		pr_warn("%px: QinQ or non-ethernet VLAN master (%s) is not supported\n", dev,
+		udp_st_warn("%px: QinQ or non-ethernet VLAN master (%s) is not supported\n", dev,
 				xmit_dev->name);
 		return -1;
 	}
@@ -557,19 +573,19 @@ static int nss_udp_st_pppoe_iface_config(struct net_device *dev)
 	 */
 	channel_count = ppp_hold_channels(dev, ppp_chan, 1);
 	if (channel_count != 1) {
-		pr_warn("%px: Unable to get the channel for device: %s\n", dev, dev->name);
+		udp_st_warn("%px: Unable to get the channel for device: %s\n", dev, dev->name);
 		return -1;
 	}
 
 	channel_protocol = ppp_channel_get_protocol(ppp_chan[0]);
 	if (channel_protocol != PX_PROTO_OE) {
-		pr_warn("%px: PPP channel protocol is not PPPoE for device: %s\n", dev, dev->name);
+		udp_st_warn("%px: PPP channel protocol is not PPPoE for device: %s\n", dev, dev->name);
 		ppp_release_channels(ppp_chan, 1);
 		return -1;
 	}
 
 	if (pppoe_channel_addressing_get(ppp_chan[0], &info)) {
-		pr_warn("%px: Unable to get the PPPoE session information for device: %s\n", dev, dev->name);
+		udp_st_warn("%px: Unable to get the PPPoE session information for device: %s\n", dev, dev->name);
 		ppp_release_channels(ppp_chan, 1);
 		return -1;
 	}
@@ -582,7 +598,7 @@ static int nss_udp_st_pppoe_iface_config(struct net_device *dev)
 		 * Next device is a VLAN device (eth0.100)
 		 */
 		if (nss_udp_st_vlan_iface_config(info.dev) < 0) {
-			pr_warn("%px: Unable to get PPPoE's VLAN device's (%s) next dev\n", dev,
+			udp_st_warn("%px: Unable to get PPPoE's VLAN device's (%s) next dev\n", dev,
  info.dev->name);
 			ret = -1;
 			goto fail;
@@ -594,7 +610,7 @@ static int nss_udp_st_pppoe_iface_config(struct net_device *dev)
 		 */
 		if ((info.dev->priv_flags & (IFF_EBRIDGE | IFF_OPENVSWITCH))
 			|| ((info.dev->flags & IFF_MASTER) && (info.dev->priv_flags & IFF_BONDING))) {
-			pr_warn("%px: PPPoE over bridge and LAG interfaces are not supported, dev: %s info.dev: %s\n",dev, dev->name, info.dev->name);
+			udp_st_warn("%px: PPPoE over bridge and LAG interfaces are not supported, dev: %s info.dev: %s\n",dev, dev->name, info.dev->name);
 			ret = -1;
 			goto fail;
 
@@ -666,26 +682,26 @@ static bool nss_udp_st_tun_setup(struct nss_udp_st_rules *rule)
 	 */
 	iface_idx = ppe_drv_iface_idx_get_by_dev(nust_dev);
 	if (iface_idx == -1) {
-		pr_err("Failed to get iface index\n");
+		udp_st_err("Failed to get iface index\n");
 		return false;
 	}
 
 	iface = ppe_drv_iface_get_by_idx(iface_idx);
 	if (!iface) {
-		pr_err("Failed to get iface using index %d\n", iface_idx);
+		udp_st_err("Failed to get iface using index %d\n", iface_idx);
 		return false;
 	}
 
 	port_num = ppe_drv_iface_port_idx_get(iface);
 	if (port_num == -1) {
-		pr_err("Failed to get port using iface: %d\n", iface_idx);
+		udp_st_err("Failed to get port using iface: %d\n", iface_idx);
 		return false;
 	}
 
-	if (rule->flags & NSS_UDP_ST_FLAG_IPV4) {
+	if (rule->ip_version == NSS_UDP_ST_FLAG_IPV4) {
 		udp_len = pkt_sz - sizeof(struct iphdr);
 		l2->eth_type = ETH_P_IP;
-	} else if (rule->flags & NSS_UDP_ST_FLAG_IPV6) {
+	} else if (rule->ip_version == NSS_UDP_ST_FLAG_IPV6) {
 		udp_len = pkt_sz - sizeof(struct ipv6hdr);
 		l2->eth_type = ETH_P_IPV6;
 	} else {
@@ -709,7 +725,7 @@ static bool nss_udp_st_tun_setup(struct nss_udp_st_rules *rule)
 	/*
 	 * populate ipv4 or ipv6  header
 	 */
-	if (rule->flags & NSS_UDP_ST_FLAG_IPV4) {
+	if (rule->ip_version == NSS_UDP_ST_FLAG_IPV4) {
 		nss_udp_st_generate_ipv4_hdr(&iph, ip_len, rule);
 		l3->saddr[0] = iph.saddr;
 		l3->daddr[0] = iph.daddr;
@@ -717,7 +733,7 @@ static bool nss_udp_st_tun_setup(struct nss_udp_st_rules *rule)
 		l3->dscp = iph.tos >> 2;
 		l3->proto = iph.protocol;
 		l3->flags = PPE_DRV_TUN_CMN_CTX_L3_IPV4;
-	} else if (rule->flags & NSS_UDP_ST_FLAG_IPV6) {
+	} else if (rule->ip_version == NSS_UDP_ST_FLAG_IPV6) {
 		nss_udp_st_generate_ipv6_hdr(&ipv6h, ip_len, rule);
 		l3->saddr[0] = ipv6h.saddr.s6_addr32[0];
 		l3->saddr[1] = ipv6h.saddr.s6_addr32[1];
@@ -750,12 +766,12 @@ static bool nss_udp_st_tun_setup(struct nss_udp_st_rules *rule)
 	rule->tun_dev = alloc_netdev(0,"udpst_tun%d",
 				NET_NAME_ENUM, nss_udp_st_dummy_netdev_setup);
 	if (!rule->tun_dev) {
-		pr_err("Error allocating internal tunnel dev\n");
+		udp_st_err("Error allocating internal tunnel dev\n");
 		return false;
 	}
 
 	if (!ppe_tun_setup(rule->tun_dev, &tun_hdr)) {
-		pr_err("failed to configure tunnel\n");
+		udp_st_err("failed to configure tunnel\n");
 		free_netdev(rule->tun_dev);
 		return false;
 	}
@@ -765,7 +781,7 @@ static bool nss_udp_st_tun_setup(struct nss_udp_st_rules *rule)
 	 */
 	rule->vp_num = ppe_drv_port_num_from_dev(rule->tun_dev);
 	if (unlikely((rule->vp_num < PPE_DRV_VIRTUAL_START) || (rule->vp_num >= PPE_DRV_VIRTUAL_END))) {
-		pr_err("Not a valid Virtual Port number %d dev %s", rule->vp_num, rule->tun_dev->name);
+		udp_st_err("Not a valid Virtual Port number %d dev %s", rule->vp_num, rule->tun_dev->name);
 		nss_udp_st_tun_destroy(rule->tun_dev);
 		return false;
 	}
@@ -891,11 +907,13 @@ static bool nss_udp_st_tx_init(void)
 
 	if (nust.config.buffer_sz < NSS_UDP_ST_BUFFER_SIZE_MIN) {
 		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_BUFFER_SIZE]);
+		udp_st_err("Invalid buffer size given: %u. Min buffer size required: %u", nust.config.buffer_sz, NSS_UDP_ST_BUFFER_SIZE_MIN);
 		return false;
 	}
 
 	if (nust.config.buffer_sz > NSS_UDP_ST_BUFFER_SIZE_MAX) {
 		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_BUFFER_SIZE]);
+		udp_st_err("Invalid buffer size given: %u. Max buffer size allowed: %u", nust.config.buffer_sz, NSS_UDP_ST_BUFFER_SIZE_MAX);
 		return false;
 	}
 
@@ -904,13 +922,19 @@ static bool nss_udp_st_tx_init(void)
 	 */
 	list_for_each_entry_safe(pos, n, &nust.rules.list, list) {
 		if (pos->sport == 0 || pos->dport == 0) {
-			pr_err("Unable to tx with arbitrary ports: sport = %u, dport = %u", pos->sport, pos->dport);
+			udp_st_err("Unable to tx with arbitrary ports: sport = %u, dport = %u", pos->sport, pos->dport);
 			return false;
 		}
 	}
 
 	if(!nss_udp_st_set_dev()) {
-		pr_err("Failed to set dev\n");
+		udp_st_err("Failed to set dev\n");
+		return false;
+	}
+
+	if (nust_dev->type == ARPHRD_PPP && nust.config.buffer_sz > (NSS_UDP_ST_BUFFER_SIZE_MAX - NSS_UDP_ST_PPPOE_OVERHEAD)) {
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_BUFFER_SIZE]);
+		udp_st_err("Invalid buffer size given: %u. Max buffer size allowed for pppoe: %u", nust.config.buffer_sz, (NSS_UDP_ST_BUFFER_SIZE_MAX - NSS_UDP_ST_PPPOE_OVERHEAD));
 		return false;
 	}
 
@@ -1126,7 +1150,7 @@ static bool nss_udp_st_tx_hw_offload_send_packets(void)
 				atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_PACKET_DROP]);
 				failed++;
 			} else {
-				if (pos->flags & NSS_UDP_ST_FLAG_IPV4) {
+				if (pos->ip_version & NSS_UDP_ST_FLAG_IPV4) {
 					pr_info("UDP-ST: Injected packet for rule: %pI4:%u -> %pI4:%u (slot=%d)\n",
 						&pos->sip.ip.ipv4, pos->sport,
 						&pos->dip.ip.ipv4, pos->dport, slot);
@@ -1250,7 +1274,7 @@ bool nss_udp_st_tx(void)
 	uint64_t total_bps;
 
 	if (!nss_udp_st_tx_init()) {
-		pr_err("Failed to init tx\n");
+		udp_st_err("Failed to init tx\n");
 		return false;
 	}
 
@@ -1262,11 +1286,11 @@ bool nss_udp_st_tx(void)
 	switch (nust_dev->type) {
 	case ARPHRD_PPP:
 		if (nust.config.flags & NSS_UDP_ST_FLAGS_VP) {
-			pr_err("PPPOE + VP speedtest is not supported\n");
+			udp_st_err("PPPOE + VP speedtest is not supported\n");
 			return false;
 		}
 		if(nss_udp_st_pppoe_iface_config(nust_dev) < 0) {
-			pr_err("Could not configure pppoe, dev: %s\n", nust_dev->name);
+			udp_st_err("Could not configure pppoe, dev: %s\n", nust_dev->name);
 			return false;
 		}
 
@@ -1286,17 +1310,17 @@ bool nss_udp_st_tx(void)
 	case ARPHRD_ETHER:
 		if ((nust_dev->priv_flags & (IFF_EBRIDGE | IFF_OPENVSWITCH))
 			|| ((nust_dev->flags & IFF_MASTER) && (nust_dev->priv_flags & IFF_BONDING))) {
-			pr_err("Bridge and LAG interfaces are not supported, dev: %s\n", nust_dev->name);
+			udp_st_err("Bridge and LAG interfaces are not supported, dev: %s\n", nust_dev->name);
 			return false;
 		}
 
 		if (is_vlan_dev(nust_dev)) {
 			if (nust.config.flags & NSS_UDP_ST_FLAGS_VP) {
-				pr_err("VLAN + VP speedtest is not supported\n");
+				udp_st_err("VLAN + VP speedtest is not supported\n");
 				return false;
 			}
 			if (nss_udp_st_vlan_iface_config(nust_dev) < 0) {
-				pr_err("Could not configure vlan, dev: %s\n", nust_dev->name);
+				udp_st_err("Could not configure vlan, dev: %s\n", nust_dev->name);
 				return false;
 			}
 
@@ -1311,7 +1335,7 @@ bool nss_udp_st_tx(void)
 		break;
 
 	default:
-		pr_err("Unsupported speedtest interface: %s\n", nust_dev->name);
+		udp_st_err("Unsupported speedtest interface: %s\n", nust_dev->name);
 		return false;
 	}
 
@@ -1344,7 +1368,7 @@ bool nss_udp_st_tx(void)
 #endif
 	}
 
-	pr_debug("Speedtest interface: %s\n", nust_dev->name);
+	udp_st_debug("Speedtest interface: %s\n", nust_dev->name);
 
 	for (i = 0; i < NR_CPUS; i++) {
 		if (!tx_timer_flag[i]) {

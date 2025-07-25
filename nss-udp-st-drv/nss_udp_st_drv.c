@@ -20,6 +20,7 @@
 #include <nss_dp_api_if.h>
 #include "nss_udp_st_ppe.h"
 #endif
+#include <nss_dp_udp_st.h>
 
 #define DEVICE_NAME "nss_udp_st"
 #define CLASS_NAME "nss_udp_st"
@@ -29,11 +30,14 @@ static struct class *dump_class;
 static int dump_major;
 
 struct nss_udp_st nust;
+bool is_dummy_vp_exists = false;
 struct delayed_work nss_udp_st_tx_delayed_work;
 struct workqueue_struct *work_queue;
 void nss_udp_st_update_stats(size_t pkt_size, uint64_t num_pkts);
 uint64_t nss_udp_st_tx_num_pkt;
 struct net_device *nust_dev;
+struct nss_udp_st_rules *exception_dport_rules;
+uint8_t exception_rules_cnt = 0;
 
 /*
  * nss_udp_st_rx_ipv4_pre_routing_hook
@@ -67,18 +71,18 @@ static struct nf_hook_ops nss_udp_st_nf_ipv6_ops[] __read_mostly = {
  */
 static int nss_udp_st_check_rules(struct nss_udp_st_rules *rules)
 {
-	if (rules->flags == NSS_UDP_ST_FLAG_IPV4) {
+	if (rules->ip_version == NSS_UDP_ST_FLAG_IPV4) {
 		if (nss_udp_st_get_macaddr_ipv4(rules->dip.ip.ipv4, (uint8_t *)&rules->dst_mac)) {
-			pr_err("Error in Updating the Return MAC Address\n");
+			udp_st_err("Error in Updating the Return MAC Address\n");
 			return -EINVAL;
 		}
-	} else if (rules->flags == NSS_UDP_ST_FLAG_IPV6) {
+	} else if (rules->ip_version == NSS_UDP_ST_FLAG_IPV6) {
 		if (nss_udp_st_get_macaddr_ipv6(rules->dip.ip.ipv6, (uint8_t *)&rules->dst_mac)) {
-			pr_err("Error in Updating the Return MAC Address\n");
+			udp_st_err("Error in Updating the Return MAC Address\n");
 			return -EINVAL;
 		}
 	} else {
-		pr_err("invalid ip version flag\n");
+		udp_st_err("invalid ip version flag\n");
 		return -EINVAL;
 	}
 	return 0;
@@ -112,6 +116,7 @@ static void nss_udp_st_clear_rules(void)
 		kfree(pos);
 	}
 	nust.rule_count = 0;
+	exception_rules_cnt = 0;
 
 	if (nust.pppoe_info.dev) {
 		nust.pppoe_info.dev = NULL;
@@ -168,7 +173,7 @@ static ssize_t nss_udp_st_write(struct file *file, const char __user *buf,
 	 * don't push rules if test has already started
 	 */
 	if (nust.mode == NSS_UDP_ST_START) {
-		pr_err("Test already started\n");
+		udp_st_err("Test already started\n");
 		return -EINVAL;
 	}
 
@@ -187,11 +192,11 @@ static ssize_t nss_udp_st_write(struct file *file, const char __user *buf,
 	rules->sport = opt.sport;
 	rules->dport = opt.dport;
 	if(opt.ip_version == 4) {
-		rules->flags |= NSS_UDP_ST_FLAG_IPV4;
+		rules->ip_version = NSS_UDP_ST_FLAG_IPV4;
 		nss_udp_st_get_ipaddr_ntoh(opt.sip, sizeof(struct in_addr), &rules->sip.ip.ipv4);
 		nss_udp_st_get_ipaddr_ntoh(opt.dip, sizeof(struct in_addr), &rules->dip.ip.ipv4);
 	} else if(opt.ip_version == 6) {
-		rules->flags |= NSS_UDP_ST_FLAG_IPV6;
+		rules->ip_version = NSS_UDP_ST_FLAG_IPV6;
 		nss_udp_st_get_ipaddr_ntoh(opt.sip, sizeof(struct in6_addr), rules->sip.ip.ipv6);
 		nss_udp_st_get_ipaddr_ntoh(opt.dip, sizeof(struct in6_addr), rules->dip.ip.ipv6);
 	} else {
@@ -220,11 +225,12 @@ static ssize_t nss_udp_st_write(struct file *file, const char __user *buf,
 	cpu = ffs(nust.bitmap_curr);
 	cpu--;
 	nust.bitmap_curr &= ~(1 << cpu);
-	pr_debug("CPU: %d, nust_bitmap %u base: nust.config.cpu_bitmap %u ", cpu, nust.bitmap_curr, nust.config.cpu_bitmap);
+	udp_st_debug("CPU: %d, nust_bitmap %u base: nust.config.cpu_bitmap %u ", cpu, nust.bitmap_curr, nust.config.cpu_bitmap);
 	rules->cpu = cpu;
 
 	list_add_tail(&(rules->list), &(nust.rules.list));
 	nust.rule_count++;
+	rules->rule_id = nust.rule_count;
 
 	return 0;
 }
@@ -281,10 +287,10 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 		max_bitmap = (1 << NR_CPUS) - 1;
 		nust.bitmap_curr = nust.config.cpu_bitmap;
 		if (nust.bitmap_curr == 0) {
-			pr_info("Setting default TX CPU to CPU 0");
+			udp_st_trace("Setting default TX CPU to CPU 0");
 			nust.bitmap_curr = 1;
 		} else if (nust.bitmap_curr > max_bitmap) {
-			pr_err("Incorrect bitmap: %u\n", nust.bitmap_curr);
+			udp_st_err("Incorrect bitmap: %u\n", nust.bitmap_curr);
 			return -EINVAL;
 		}
 
@@ -323,12 +329,22 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 			nss_udp_st_ppe_policer_init();
 		}
 #endif
+		if (is_dummy_vp_exists) {
+			nss_udp_st_rx_free_dummy_vp(nust.dummy_vp_num);
+			is_dummy_vp_exists = false;
+		}
+
+		nust.dummy_vp_num = nss_udp_st_rx_dummy_vp_alloc();
+
+		if (nust.dummy_vp_num != -1) {
+			is_dummy_vp_exists = true;
+		}
 
 		break;
 
 	case NSS_UDP_ST_IOCTL_START_TX:
 		if (nust.mode == NSS_UDP_ST_START) {
-			pr_err("Tx test already started\n");
+			udp_st_err("Tx test already started\n");
 			return -EINVAL;
 		}
 
@@ -405,9 +421,14 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 		break;
 
 	case NSS_UDP_ST_IOCTL_START_RX:
+		nss_dp_udp_st_rx_register_cb(nss_udp_st_rx_receive_skb);
 		if (nust.mode == NSS_UDP_ST_START) {
-			pr_err("Rx test already started\n");
+			udp_st_err("Rx test already started\n");
 			return -EINVAL;
+		}
+
+		if (!nss_udp_st_rx_rfs_rule_create()) {
+			udp_st_warn("Rx RFS rule create failed");
 		}
 
 		nss_udp_st_reset_stats();
@@ -436,13 +457,13 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 		 */
 		ret = nf_register_net_hooks(&init_net, nss_udp_st_nf_ipv4_ops, ARRAY_SIZE(nss_udp_st_nf_ipv4_ops));
 		if (ret < 0) {
-			pr_err("Can't register Rx netfilter hooks.\n");
+			udp_st_err("Can't register Rx netfilter hooks.\n");
 			return -EINVAL;
 		}
 
 		ret = nf_register_net_hooks(&init_net, nss_udp_st_nf_ipv6_ops, ARRAY_SIZE(nss_udp_st_nf_ipv6_ops));
 		if (ret < 0) {
-			pr_err("Can't register Rx netfilter hooks.\n");
+			udp_st_err("Can't register Rx netfilter hooks.\n");
 			nf_unregister_net_hooks(&init_net, nss_udp_st_nf_ipv4_ops, ARRAY_SIZE(nss_udp_st_nf_ipv4_ops));
 			return -EINVAL;
 		}
@@ -465,6 +486,7 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 			if (nust.config.flags & NSS_UDP_ST_FLAGS_HW_OFFLOAD)
 				nss_udp_st_ppe_throughput_timer_stop();
 #endif
+			nss_udp_st_rx_rfs_rule_destroy();
 		} else {
 #ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
 			if (nust.config.flags & NSS_UDP_ST_FLAGS_HW_OFFLOAD) {
@@ -525,12 +547,19 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 		}
 
 		if(!nss_udp_st_tx_rate_change(nust.config.rate)) {
-			pr_debug("Rate change failed\n");
+			udp_st_debug("Rate change failed\n");
 		}
 		break;
 
 	case NSS_UDP_ST_IOCTL_RESET_STATS:
 		nss_udp_st_reset_stats();
+		break;
+
+	case NSS_UDP_ST_IOCTL_FINAL:
+		if (is_dummy_vp_exists) {
+			nss_udp_st_rx_free_dummy_vp(nust.dummy_vp_num);
+			is_dummy_vp_exists = false;
+		}
 		break;
 
 	default:
@@ -563,10 +592,11 @@ static int __init nss_udp_st_init(void)
 	memset(&nust, 0, sizeof(struct nss_udp_st));
 	INIT_LIST_HEAD(&(nust.rules.list));
 
+	exception_dport_rules = (struct nss_udp_st_rules *)kzalloc(sizeof(struct nss_udp_st_rules) * 256, GFP_KERNEL);
 	dump_major = register_chrdev(UNNAMED_MAJOR, DEVICE_NAME, &nss_udp_st_ops);
 	if (dump_major < 0) {
 		ret = dump_major;
-		pr_err("Unable to allocate a major number err = %d\n", ret);
+		udp_st_err("Unable to allocate a major number err = %d\n", ret);
 		goto reg_failed;
 	}
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0))
@@ -576,14 +606,14 @@ static int __init nss_udp_st_init(void)
 #endif
 	if (IS_ERR(dump_class)) {
 		ret = PTR_ERR(dump_class);
-		pr_err("Unable to create dump class = %d\n", ret);
+		udp_st_err("Unable to create dump class = %d\n", ret);
 		goto class_failed;
 	}
 
 	dump_dev = device_create(dump_class, NULL, MKDEV(dump_major, 0), NULL, DEVICE_NAME);
 	if (IS_ERR(dump_dev)) {
 		ret = PTR_ERR(dump_dev);
-		pr_err("Unable to create a device err = %d\n", ret);
+		udp_st_err("Unable to create a device err = %d\n", ret);
 		goto device_failed;
 	}
 	return ret;
