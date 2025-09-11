@@ -402,7 +402,7 @@ bool nss_udp_st_tx_valid(void)
 	if (elapsed < (nust.time * 1000)) {
 		return true;
 	}
-	nust.mode = NSS_UDP_ST_STOP;
+
 	return false;
 }
 
