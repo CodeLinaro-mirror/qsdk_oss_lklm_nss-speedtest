@@ -1,25 +1,14 @@
 /*
- **************************************************************************
- * Copyright (c) 2022-2025 Qualcomm Innovation Center, Inc. All rights reserved.
- *
- * Permission to use, copy, modify, and/or distribute this software for
- * any purpose with or without fee is hereby granted, provided that the
- * above copyright notice and this permission notice appear in all copies.
- *
- * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
- * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
- * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
- * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
- * OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- **************************************************************************
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * SPDX-License-Identifier: ISC
  */
 
 #include <linux/list.h>
 #include <linux/string.h>
 #include <linux/hrtimer.h>
 #include <linux/math64.h>
+#include <linux/ethtool.h>
+#include <linux/rtnetlink.h>
 #include <net/act_api.h>
 #include <net/netfilter/nf_conntrack_core.h>
 #include <linux/if_vlan.h>
@@ -729,14 +718,55 @@ static void nss_udp_st_tx_work_send_packets(int cpu)
 }
 
 /*
- * nss_udp_st_tx_rate_change
- *	Dynamically change the rate of speedtest
+ * nss_udp_st_tx_get_link_speed
+ *	API to get link speed on physical interface on which speed test will run.
+ *
+ * This API has to be called with physical dev only.
  */
-bool nss_udp_st_tx_rate_change(uint32_t rate)
+static uint32_t nss_udp_st_tx_get_link_speed(struct net_device *dev)
+{
+	struct ethtool_link_ksettings ecmd;
+	uint32_t speed_mbps;
+	int ret;
+
+	if (!dev) {
+		pr_err("Null physical dev\n");
+		return 0;
+	}
+
+	if (!netif_carrier_ok(dev)) {
+		pr_warn("Net device down %s\n", dev->name);
+		return 0;
+	}
+
+	rtnl_lock();
+	ret = __ethtool_get_link_ksettings(dev, &ecmd);
+	rtnl_unlock();
+
+	if (ret) {
+		pr_warn("Failed to read ethtool stats. Ret =  %d, dev %s\n", ret, dev->name);
+		return 0;
+	}
+
+	speed_mbps = ecmd.base.speed;
+	if (speed_mbps == SPEED_UNKNOWN) {
+		pr_warn("Link up, speed unknown %s\n", dev->name);
+		return 0;
+	}
+
+	pr_info("nss_udp_st_tx_get_link_speed: using physical device %s\n", dev->name);
+	return speed_mbps;
+}
+
+/*
+ * nss_udp_st_calculate_tx_rate()
+ *	Calculate number of packets to send per timer interrupt based on rate
+ */
+static bool nss_udp_st_calculate_tx_rate(uint32_t rate)
 {
 	uint64_t total_bps;
 
-	if (nust.config.rate > NSS_UDP_ST_RATE_MAX) {
+	if (rate > NSS_UDP_ST_RATE_MAX) {
 		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_RATE]);
 		return false;
 	}
@@ -751,6 +781,7 @@ bool nss_udp_st_tx_rate_change(uint32_t rate)
 	 */
 	nss_udp_st_tx_num_pkt = div_u64(total_bps , (nust.rule_count * (nust.config.buffer_sz + sizeof(struct ethhdr)) * 8 * NSS_UDP_ST_TX_TIMER));
 	nss_udp_st_tx_num_pkt++;
+	pr_debug("total number of packets to tx every 10ms %llu\n", nss_udp_st_tx_num_pkt);
 
 	return true;
 }
@@ -761,14 +792,8 @@ bool nss_udp_st_tx_rate_change(uint32_t rate)
  */
 static bool nss_udp_st_tx_init(void)
 {
-	uint64_t total_bps;
 	struct nss_udp_st_rules *pos = NULL;
 	struct nss_udp_st_rules *n = NULL;
-
-	if (nust.config.rate > NSS_UDP_ST_RATE_MAX) {
-		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_RATE]);
-		return false;
-	}
 
 	if (nust.config.buffer_sz < NSS_UDP_ST_BUFFER_SIZE_MIN) {
 		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_BUFFER_SIZE]);
@@ -790,34 +815,37 @@ static bool nss_udp_st_tx_init(void)
 		}
 	}
 
-	/*
-	 * Convert Mbps to bps
-	 */
-	total_bps = (uint64_t)nust.config.rate * 1000000;
-
-	/*
-	 * calculate number of pkts to send per rule per 10 ms
-	 */
-	nss_udp_st_tx_num_pkt = div_u64(total_bps , (nust.rule_count * (nust.config.buffer_sz + sizeof(struct ethhdr)) * 8 * NSS_UDP_ST_TX_TIMER));
-	nss_udp_st_tx_num_pkt++;
 	if(!nss_udp_st_set_dev()) {
 		pr_err("Failed to set dev\n");
 		return false;
 	}
 
-	if (nust.config.flags & NSS_UDP_ST_FLAGS_VP) {
-#ifdef NSS_UDP_ST_DRV_VP_ENABLE
-		if (!nss_udp_st_tun_setup_for_all_rules()) {
-			pr_err("Failed to Setup tunnels for all rules\n");
-			return false;
-		}
-#else
-		pr_err("No VP support on this SOC\n");
+	return true;
+}
+
+/*
+ * nss_udp_st_tx_rate_change
+ *	Dynamically change the rate of speedtest
+ */
+bool nss_udp_st_tx_rate_change(uint32_t rate)
+{
+	if (!xmit_dev) {
+		pr_warn("xmit dev NULL\n");
 		return false;
-#endif
 	}
 
-	return true;
+	uint32_t link_speed = nss_udp_st_tx_get_link_speed(xmit_dev);
+	if (!link_speed) {
+		pr_warn("Failed to get link speed\n");
+		return false;
+	}
+
+	if (link_speed < rate) {
+		pr_warn("Link speed %u is lower than the configured rate %u, Limiting tx rate to link speed\n", link_speed, nust.config.rate);
+		rate = link_speed;
+	}
+
+	return nss_udp_st_calculate_tx_rate(rate);
 }
 
 /*
@@ -898,6 +926,7 @@ bool nss_udp_st_tx(void)
 {
 	uint32_t i;
 	char qname[NSS_UDP_ST_PROCESS_NAME_SZ];
+	uint32_t link_speed;
 
 	if (!nss_udp_st_tx_init()) {
 		pr_err("Failed to init tx\n");
@@ -941,6 +970,40 @@ bool nss_udp_st_tx(void)
 	default:
 		pr_err("Unsupported speedtest interface: %s\n", nust_dev->name);
 		return false;
+	}
+
+	/*
+	 * Check link speed on the physical transmit interface and bound rate accordingly.
+	 */
+	link_speed = nss_udp_st_tx_get_link_speed(xmit_dev);
+	if (!link_speed) {
+		pr_warn("Failed to get link speed\n");
+		return false;
+	}
+
+	if (link_speed < nust.config.rate) {
+		pr_warn("Link speed %u is lower than the configured rate %u, Limiting tx rate to link speed\n", link_speed, nust.config.rate);
+		nust.config.rate = link_speed;
+	}
+
+	/*
+	 * Calculate the number of packets per timer interrupt based on the (potentially updated) rate.
+	 */
+	if (!nss_udp_st_calculate_tx_rate(nust.config.rate)) {
+		pr_err("Failed to calculate TX rate\n");
+		return false;
+	}
+
+	if (nust.config.flags & NSS_UDP_ST_FLAGS_VP) {
+#ifdef NSS_UDP_ST_DRV_VP_ENABLE
+		if (!nss_udp_st_tun_setup_for_all_rules()) {
+			pr_err("Failed to Setup tunnels for all rules\n");
+			return false;
+		}
+#else
+		pr_err("No VP support on this SOC\n");
+		return false;
+#endif
 	}
 
 	pr_debug("Speedtest interface: %s\n", nust_dev->name);
