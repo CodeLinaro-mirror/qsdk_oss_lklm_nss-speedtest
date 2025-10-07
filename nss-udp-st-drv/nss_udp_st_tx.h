@@ -1,25 +1,14 @@
 /*
- **************************************************************************
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
- *
- * Permission to use, copy, modify, and/or distribute this software for
- * any purpose with or without fee is hereby granted, provided that the
- * above copyright notice and this permission notice appear in all copies.
- *
- * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
- * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
- * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
- * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
- * OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- **************************************************************************
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * SPDX-License-Identifier: ISC
  */
+
 #ifndef __NSS_UDP_ST_TX_H
 #define __NSS_UDP_ST_TX_H
 
 #define NSS_UDP_ST_TX_DEFAULT_TIMEOUT 50	/* Default Tx test duration*/
-#define NSS_UDP_ST_TX_TIMER 100			/* To caluculate pkt per 10 ms*/
+#define NSS_UDP_ST_TX_DEFAULT_TIMER_FREQ 100	/* To caluculate pkt per 10 ms */
+#define NSS_UDP_ST_TX_MAX_TIMER_FREQ 2000	/* Max supported frequency (500 us) */
 #define NSS_UDP_ST_MIN_HEADROOM 32		/* Min headroom needed */
 #define NSS_UDP_ST_MIN_TAILROOM 32		/* Min tailroom needed */
 #define NSS_UDP_ST_PROCESS_NAME_SZ 8		/* Size of buffer used to store process name */
