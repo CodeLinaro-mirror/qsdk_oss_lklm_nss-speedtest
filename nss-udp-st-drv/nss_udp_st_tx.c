@@ -28,6 +28,7 @@ static enum hrtimer_restart tx_hr_restart[NR_CPUS] = {HRTIMER_NORESTART};
 static struct vlan_hdr vh;
 static struct net_device *xmit_dev;
 static struct pppoe_opt info;
+static uint16_t l2_overhead;
 
 struct work_struct udp_st_work[NR_CPUS];	/* Work struct */
 struct workqueue_struct *udp_st_wq[NR_CPUS];	/* workqueue struct */
@@ -718,6 +719,81 @@ static void nss_udp_st_tx_work_send_packets(int cpu)
 }
 
 /*
+ * nss_udp_st_tx_rate_config
+ *	API to configure number of packets to be sent out per timer interrupt.
+ *
+ * If burst_size is configured, update the timer interval, else update the burst_size keeping
+ * timer interval set to 100HZ (10ms).
+ */
+static void nss_udp_st_tx_rate_config(uint64_t total_bps)
+{
+	uint64_t bits_per_pkt = (nust.config.buffer_sz + l2_overhead) * 8;
+
+	/*
+	 * If burst_size is configured, calculate the timer freq else
+	 * calculate number of pkts to send per rule per 10 ms
+	 */
+	if (!nust.config.burst_size) {
+		nust.config.timer_freq = NSS_UDP_ST_TX_DEFAULT_TIMER_FREQ;
+		nss_udp_st_tx_num_pkt = div_u64(total_bps , (nust.rule_count * bits_per_pkt * nust.config.timer_freq));
+		nss_udp_st_tx_num_pkt++;
+	} else {
+		nust.config.timer_freq = div_u64(total_bps , (nust.rule_count * bits_per_pkt * nust.config.burst_size));
+		if (nust.config.timer_freq == 0 || nust.config.timer_freq > NSS_UDP_ST_TX_MAX_TIMER_FREQ) {
+			pr_warn("Un-supported timer freq %u, using default freq of 100 Hz\n", nust.config.timer_freq);
+			nust.config.timer_freq = NSS_UDP_ST_TX_DEFAULT_TIMER_FREQ;
+			nss_udp_st_tx_num_pkt = div_u64(total_bps , (nust.rule_count * bits_per_pkt * nust.config.timer_freq));
+			nss_udp_st_tx_num_pkt++;
+		} else {
+			nss_udp_st_tx_num_pkt = nust.config.burst_size + 1;
+		}
+	}
+
+	/*
+	 * Set the timer freq based on the config.
+	 * This will be used by hrtimer_start and hrtimer_forward APIs.
+	 */
+	kt = ns_to_ktime(DIV_ROUND_CLOSEST_ULL(NSEC_PER_SEC, nust.config.timer_freq));
+}
+
+/*
+ * nss_udp_st_tx_init()
+ *	initialize speedtest for tx
+ */
+static bool nss_udp_st_tx_init(void)
+{
+	struct nss_udp_st_rules *pos = NULL;
+	struct nss_udp_st_rules *n = NULL;
+
+	if (nust.config.buffer_sz < NSS_UDP_ST_BUFFER_SIZE_MIN) {
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_BUFFER_SIZE]);
+		return false;
+	}
+
+	if (nust.config.buffer_sz > NSS_UDP_ST_BUFFER_SIZE_MAX) {
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_BUFFER_SIZE]);
+		return false;
+	}
+
+	/*
+	 * Check all ports are specified
+	 */
+	list_for_each_entry_safe(pos, n, &nust.rules.list, list) {
+		if (pos->sport == 0 || pos->dport == 0) {
+			pr_err("Unable to tx with arbitrary ports: sport = %u, dport = %u", pos->sport, pos->dport);
+			return false;
+		}
+	}
+
+	if(!nss_udp_st_set_dev()) {
+		pr_err("Failed to set dev\n");
+		return false;
+	}
+
+	return true;
+}
+
+/*
  * nss_udp_st_tx_get_link_speed
  *	API to get link speed on physical interface on which speed test will run.
  *
@@ -759,16 +835,28 @@ static uint32_t nss_udp_st_tx_get_link_speed(struct net_device *dev)
 }
 
 /*
- * nss_udp_st_calculate_tx_rate()
- *	Calculate number of packets to send per timer interrupt based on rate
+ * nss_udp_st_tx_rate_change
+ *	Dynamically change the rate of speedtest
  */
-static bool nss_udp_st_calculate_tx_rate(uint32_t rate)
+bool nss_udp_st_tx_rate_change(uint32_t rate)
 {
 	uint64_t total_bps;
+	uint32_t link_speed;
 
-	if (rate > NSS_UDP_ST_RATE_MAX) {
-		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_RATE]);
+	if (!xmit_dev) {
+		pr_warn("xmit dev NULL\n");
 		return false;
+	}
+
+	link_speed = nss_udp_st_tx_get_link_speed(xmit_dev);
+	if (!link_speed) {
+		pr_warn("Failed to get link speed of dev %s\n", xmit_dev->name);
+		return false;
+	}
+
+	if (link_speed < rate) {
+		pr_warn("Link speed %u is lower than the configured rate %u, Limiting tx rate to link speed\n", link_speed, rate);
+		rate = link_speed;
 	}
 
 	/*
@@ -776,76 +864,8 @@ static bool nss_udp_st_calculate_tx_rate(uint32_t rate)
 	 */
 	total_bps = (uint64_t)rate * 1000000;
 
-	/*
-	 * calculate number of pkts to send per rule per 10 ms
-	 */
-	nss_udp_st_tx_num_pkt = div_u64(total_bps , (nust.rule_count * (nust.config.buffer_sz + sizeof(struct ethhdr)) * 8 * NSS_UDP_ST_TX_TIMER));
-	nss_udp_st_tx_num_pkt++;
-	pr_debug("total number of packets to tx every 10ms %llu\n", nss_udp_st_tx_num_pkt);
-
+	nss_udp_st_tx_rate_config(total_bps);
 	return true;
-}
-
-/*
- * nss_udp_st_tx_init()
- *	initialize speedtest for tx
- */
-static bool nss_udp_st_tx_init(void)
-{
-	struct nss_udp_st_rules *pos = NULL;
-	struct nss_udp_st_rules *n = NULL;
-
-	if (nust.config.buffer_sz < NSS_UDP_ST_BUFFER_SIZE_MIN) {
-		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_BUFFER_SIZE]);
-		return false;
-	}
-
-	if (nust.config.buffer_sz > NSS_UDP_ST_BUFFER_SIZE_MAX) {
-		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_BUFFER_SIZE]);
-		return false;
-	}
-
-	/*
-	 * Check all ports are specified
-	 */
-	list_for_each_entry_safe(pos, n, &nust.rules.list, list) {
-		if (pos->sport == 0 || pos->dport == 0) {
-			pr_err("Unable to tx with arbitrary ports: sport = %u, dport = %u", pos->sport, pos->dport);
-			return false;
-		}
-	}
-
-	if(!nss_udp_st_set_dev()) {
-		pr_err("Failed to set dev\n");
-		return false;
-	}
-
-	return true;
-}
-
-/*
- * nss_udp_st_tx_rate_change
- *	Dynamically change the rate of speedtest
- */
-bool nss_udp_st_tx_rate_change(uint32_t rate)
-{
-	if (!xmit_dev) {
-		pr_warn("xmit dev NULL\n");
-		return false;
-	}
-
-	uint32_t link_speed = nss_udp_st_tx_get_link_speed(xmit_dev);
-	if (!link_speed) {
-		pr_warn("Failed to get link speed\n");
-		return false;
-	}
-
-	if (link_speed < rate) {
-		pr_warn("Link speed %u is lower than the configured rate %u, Limiting tx rate to link speed\n", link_speed, nust.config.rate);
-		rate = link_speed;
-	}
-
-	return nss_udp_st_calculate_tx_rate(rate);
 }
 
 /*
@@ -895,7 +915,6 @@ static enum hrtimer_restart nss_udp_st_hrtimer_callback(struct hrtimer *timer)
 void nss_udp_st_hrtimer_init(struct hrtimer *hrt, int cpu)
 {
 	tx_hr_restart[cpu] = HRTIMER_RESTART;
-	kt = ktime_set(0,10000000);
 	hrtimer_init(hrt, CLOCK_REALTIME, HRTIMER_MODE_ABS_HARD);
 	hrt->function = &nss_udp_st_hrtimer_callback;
 }
@@ -927,11 +946,17 @@ bool nss_udp_st_tx(void)
 	uint32_t i;
 	char qname[NSS_UDP_ST_PROCESS_NAME_SZ];
 	uint32_t link_speed;
+	uint64_t total_bps;
 
 	if (!nss_udp_st_tx_init()) {
 		pr_err("Failed to init tx\n");
 		return false;
 	}
+
+	/*
+	 * Initialize L2 overhead with Ethernet header size
+	 */
+	l2_overhead = sizeof(struct ethhdr);
 
 	switch (nust_dev->type) {
 	case ARPHRD_PPP:
@@ -942,6 +967,18 @@ bool nss_udp_st_tx(void)
 		if(nss_udp_st_pppoe_iface_config(nust_dev) < 0) {
 			pr_err("Could not configure pppoe, dev: %s\n", nust_dev->name);
 			return false;
+		}
+
+		/*
+		 * PPPoE: Add 6 bytes PPPoE header + 2 bytes PPP protocol
+		 */
+		l2_overhead += 8;
+
+		/*
+		 * Check if PPPoE is over VLAN
+		 */
+		if (is_vlan_dev(info.dev)) {
+			l2_overhead += VLAN_HLEN;
 		}
 		break;
 
@@ -961,6 +998,11 @@ bool nss_udp_st_tx(void)
 				pr_err("Could not configure vlan, dev: %s\n", nust_dev->name);
 				return false;
 			}
+
+			/*
+			 * VLAN: Add 4 bytes VLAN header
+			 */
+			l2_overhead += VLAN_HLEN;
 		} else {
 			xmit_dev = nust_dev;
 		}
@@ -986,13 +1028,8 @@ bool nss_udp_st_tx(void)
 		nust.config.rate = link_speed;
 	}
 
-	/*
-	 * Calculate the number of packets per timer interrupt based on the (potentially updated) rate.
-	 */
-	if (!nss_udp_st_calculate_tx_rate(nust.config.rate)) {
-		pr_err("Failed to calculate TX rate\n");
-		return false;
-	}
+	total_bps = (uint64_t)nust.config.rate * 1000000;
+	nss_udp_st_tx_rate_config(total_bps);
 
 	if (nust.config.flags & NSS_UDP_ST_FLAGS_VP) {
 #ifdef NSS_UDP_ST_DRV_VP_ENABLE
