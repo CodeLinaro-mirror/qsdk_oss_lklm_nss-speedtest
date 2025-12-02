@@ -49,6 +49,7 @@ struct option long_options[] =
 	{"vp", no_argument, NULL, 'v'},
 	{"help", no_argument, NULL, 'h'},
 	{"cpu_bitmap", required_argument, NULL, 'u'},
+	{"burst", required_argument, NULL, 'g'},
 	{0, 0, 0, 0}
 };
 
@@ -418,7 +419,7 @@ static void nss_udp_st_usage(void)
 {
 	printf("\nUsage:");
 	printf("\n./nss_udp_st --mode <init> --rate <rate in Mbps> \
-		--buffer_sz <buffer_size in bytes> --dscp <dscp> --net_dev <net_dev> --timestamp");
+		--buffer_sz <buffer_size in bytes> --burst burst_number --dscp <dscp> --net_dev <net_dev> --timestamp");
 	printf("\n./nss_udp_st --mode <create> --sip <sip> --dip <dip> \
 		--sport <sport> --dport <dport> --version <4/6>");
 	printf("\n./nss_udp_st --mode <start> --type <tx/rx> --time <time in seconds>");
@@ -440,7 +441,7 @@ static int nss_udp_st_get_opt(int args, char **argv)
 	char *endptr;
 
 	while (1) {
-		c = getopt_long_only(args, argv, "m:x:s:d:y:z:n:f:t:r:b:c:0:u",
+		c = getopt_long_only(args, argv, "m:x:s:d:y:z:n:f:t:r:b:c:0:u:g",
 			long_options, &option_index);
 		if (c == -1)
 			break;
@@ -556,9 +557,15 @@ static int nss_udp_st_get_opt(int args, char **argv)
 		case 'h':
 			nss_udp_st_usage();
 			break;
+
 		case 'u':
 			st_param.cpu_bitmap = atoi(optarg);
 			break;
+
+		case 'g':
+			st_param.burst_size = atoi(optarg);
+			break;
+
 		default:
 			nss_udp_st_usage();
 			return -EINVAL;
