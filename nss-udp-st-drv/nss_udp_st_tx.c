@@ -82,9 +82,10 @@ static void nss_udp_st_generate_udp_hdr(struct udphdr *uh, uint16_t udp_len, str
 	uh->source = htons(rules->sport);
 	uh->dest = htons(rules->dport);
 	uh->len = htons(udp_len);
+	uh->check = 0;
 
 	if (rules->flags & NSS_UDP_ST_FLAG_IPV4) {
-		uh->check = csum_tcpudp_magic(rules->sip.ip.ipv4, rules->dip.ip.ipv4, udp_len, IPPROTO_UDP,
+		uh->check = csum_tcpudp_magic(htonl(rules->sip.ip.ipv4), htonl(rules->dip.ip.ipv4), udp_len, IPPROTO_UDP,
 		csum_partial(uh, udp_len, 0));
 	} else if (rules->flags & NSS_UDP_ST_FLAG_IPV6) {
 		struct in6_addr saddr;
