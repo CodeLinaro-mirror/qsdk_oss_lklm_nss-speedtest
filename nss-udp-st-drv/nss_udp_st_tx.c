@@ -276,13 +276,28 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 	align_offset = PTR_ALIGN(skb->data, SMP_CACHE_BYTES) - skb->data;
 	skb_reserve(skb, NSS_UDP_ST_MAX_HEADROOM + align_offset + sizeof(uint16_t));
 
+	/*
+	 * Add complete payload first.
+	 */
 	if (nust.config.flags & NSS_UDP_ST_FLAGS_TIMESTAMP) {
 		nss_udp_st_add_seq_tstamp(skb, rules);
 		payload_sz = sizeof(struct nss_udp_st_timestamp_info);
 	}
 
+	if (rules->flags & NSS_UDP_ST_FLAG_IPV4) {
+		data = skb_put(skb, pkt_sz - sizeof(*iph) - sizeof(*uh) - payload_sz);
+		memset(data, 0, pkt_sz - sizeof(*iph) - sizeof(*uh) - payload_sz);
+	} else if (rules->flags & NSS_UDP_ST_FLAG_IPV6) {
+		data = skb_put(skb, pkt_sz - sizeof(*ipv6h) - sizeof(*uh) - payload_sz);
+		memset(data, 0, pkt_sz - sizeof(*ipv6h) - sizeof(*uh) - payload_sz);
+	} else {
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_IP_VERSION]);
+		kfree_skb(skb);
+		return;
+	}
+
 	/*
-	 * populate udp header
+	 * populate udp header (after payload is complete)
 	 */
 	skb_push(skb, sizeof(*uh));
 	skb_reset_transport_header(skb);
@@ -290,26 +305,18 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 	nss_udp_st_generate_udp_hdr(uh, udp_len, rules);
 
 	/*
-	 * populate ipv4 or ipv6  header
+	 * populate ipv4 or ipv6 header
 	 */
 	if (rules->flags & NSS_UDP_ST_FLAG_IPV4) {
 		skb_push(skb, sizeof(*iph));
 		skb_reset_network_header(skb);
 		iph = ip_hdr(skb);
 		nss_udp_st_generate_ipv4_hdr(iph, ip_len, rules);
-		data = skb_put(skb, pkt_sz - sizeof(*iph) - sizeof(*uh));
-		memset(data + payload_sz, 0, pkt_sz - sizeof(*iph) - sizeof(*uh) - payload_sz);
 	} else if (rules->flags & NSS_UDP_ST_FLAG_IPV6) {
 		skb_push(skb, sizeof(*ipv6h));
 		skb_reset_network_header(skb);
 		ipv6h = ipv6_hdr(skb);
 		nss_udp_st_generate_ipv6_hdr(ipv6h, ip_len, rules);
-		data = skb_put(skb, pkt_sz - sizeof(*ipv6h) - sizeof(*uh));
-		memset(data + payload_sz, 0, pkt_sz - sizeof(*ipv6h) - sizeof(*uh) - payload_sz);
-	} else {
-		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_IP_VERSION]);
-		kfree_skb(skb);
-		return;
 	}
 
 	switch (ndev->type) {
