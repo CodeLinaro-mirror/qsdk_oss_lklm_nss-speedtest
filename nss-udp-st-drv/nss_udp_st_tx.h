@@ -24,6 +24,10 @@ bool nss_udp_st_tx_valid(void);
 
 bool nss_udp_st_tx(void);
 
+#ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
+bool nss_udp_st_tx_hw_offload(void);
+#endif
+
 void nss_udp_st_hrtimer_cleanup(void);
 
 #endif /*NSS_UDP_ST_TX_H*/

@@ -33,6 +33,7 @@
 
 #define NSS_UDP_ST_FLAGS_TIMESTAMP 0x1	/* Flag to enable timestamp */
 #define NSS_UDP_ST_FLAGS_VP 0x2		/* Flag to enable VP */
+#define NSS_UDP_ST_FLAGS_HW_OFFLOAD 0x4	/* Flag to enable HW offload */
 
 #ifdef __KERNEL__ /* only kernel will use. */
 #define NSS_UDP_ST_MAX_HEADROOM 32	/* Maximum headroom needed */
@@ -44,7 +45,7 @@
 extern struct nss_udp_st nust;
 extern struct delayed_work nss_udp_st_tx_delayed_work;
 extern struct workqueue_struct *work_queue;
-extern void nss_udp_st_update_stats(size_t pkt_size);
+extern void nss_udp_st_update_stats(size_t pkt_size, uint64_t num_pkts);
 extern uint64_t nss_udp_st_tx_num_pkt;
 extern struct net_device *nust_dev;
 #endif
@@ -125,6 +126,16 @@ struct nss_udp_st_opt {
 
 #ifdef __KERNEL__ /* only kernel will use. */
 /*
+ * nss_udp_st_ppoee_info
+ *	PPPoE header information
+ */
+struct nss_udp_st_ppoee_info {
+	struct net_device *dev;			/* Base Net device */
+	uint16_t pppoe_session_id;		/* PPPoE session ID on this interface */
+	uint8_t remote_mac[ETH_ALEN];		/* MAC Address of the PPPoE concentrator */
+};
+
+/*
  * nss_udp_st_mode
  *  start/stop flags
  */
@@ -160,11 +171,24 @@ struct nss_udp_st_pkt_stats {
 };
 
 /*
+ * nss_udp_st_ppe_stats
+ *	PPE hardware flow stats (direction-neutral; TX and RX never run simultaneously)
+ */
+struct nss_udp_st_ppe_stats {
+	atomic64_t ppe_packets;		/* PPE flow packets (cumulative) */
+	atomic64_t ppe_bytes;		/* PPE flow bytes (cumulative) */
+	atomic64_t ppe_pkts_per_sec;	/* PPE packets per second */
+	atomic64_t ppe_bytes_per_sec;	/* PPE bytes per second (wire-rate) */
+	atomic64_t ppe_sample_count;	/* Number of 1-second samples collected */
+};
+
+/*
  * nss_udp_st_stats
  *	stats for tx/rx test
  */
 struct nss_udp_st_stats {
 	struct nss_udp_st_pkt_stats p_stats;			/* Packet statistics */
+	struct nss_udp_st_ppe_stats ppe_stats;			/* PPE hardware flow statistics */
 	atomic64_t timer_stats[NSS_UDP_ST_STATS_TIME_MAX];	/* Time statistics */
 	atomic64_t errors[NSS_UDP_ST_ERROR_MAX];		/* Error statistics */
 	atomic64_t total_latency;				/* Total Latency */
@@ -185,7 +209,7 @@ struct nss_udp_st_timestamp_info {
  *	config rules configured for tx/rx test
  */
 struct nss_udp_st_rules {
-	struct list_head list;		/* kernel’s list structure */
+	struct list_head list;		/* kernel's list structure */
 	struct nss_udp_st_ip sip;	/* source ip */
 	struct nss_udp_st_ip dip;	/* dest ip */
 	uint16_t sport;			/* source port */
@@ -197,6 +221,10 @@ struct nss_udp_st_rules {
 	uint8_t cpu;			/* CPU that this connection runs */
 	struct net_device *tun_dev;	/* Tunnel device mapped to this connection */
 	int32_t vp_num;			/* VP num this connection is mapped to */
+	struct net_device *ppe_dev;	/* Device used for ppe vp */
+	void *policer_ctx;		/* Per-flow policer context */
+	uint32_t policer_rule_id;	/* Per-flow policer rule ID */
+	uint64_t policer_prev_rpc;	/* Previous cumulative red-packet count for delta calculation */
 };
 
 /*
@@ -207,11 +235,13 @@ struct nss_udp_st {
 	struct nss_udp_st_param config;	/* config params for tx */
 	struct nss_udp_st_rules rules;	/* database for config rules */
 	struct nss_udp_st_stats stats;	/* result statistics */
+	struct nss_udp_st_ppoee_info pppoe_info;	/* PPPoE session information */
 	uint32_t rule_count;		/* no of rules configured */
 	uint32_t time;			/* duration of test */
 	uint32_t bitmap_curr;		/* temp variable to see assignment map */
 	bool mode;			/* start =0; stop=1 */
 	bool dir;			/* tx=0; rx=1 */
+	atomic_t xmit_idx;		/* Index for EDMA descriptor assignment for HW offload */
 };
 #endif
 

@@ -19,6 +19,9 @@
 #include <ppe_vp_tx.h>
 #include <nss_ppe_tun_drv.h>
 #endif
+#ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
+#include <nss_dp_api_if.h>
+#endif
 #include "nss_udp_st_public.h"
 
 int tx_timer_flag[NR_CPUS];
@@ -230,9 +233,99 @@ static void nss_udp_st_tx_packets_vp(struct net_device *ndev, struct nss_udp_st_
 		return;
 	}
 
-	nss_udp_st_update_stats(pkt_sz);
+	nss_udp_st_update_stats(pkt_sz, 1);
 }
 #endif
+
+#ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
+/*
+ * nss_udp_st_tx_packets_ppe_vp()
+ *	Create the skb for hw offload
+ */
+static void nss_udp_st_tx_packets_ppe_vp(struct net_device *ndev, struct nss_udp_st_rules *rules, struct sk_buff **out_skb)
+{
+	struct sk_buff *skb;
+	struct udphdr *uh;
+	struct iphdr *iph;
+	struct ipv6hdr *ipv6h;
+	size_t align_offset;
+	size_t skb_sz;
+	size_t pkt_sz;
+	uint16_t ip_len;
+	uint16_t udp_len;
+	unsigned char *data;
+
+	pkt_sz = nust.config.buffer_sz;
+	ip_len = pkt_sz;
+
+	if (rules->flags & NSS_UDP_ST_FLAG_IPV4) {
+		udp_len = pkt_sz - sizeof(*iph);
+	} else if (rules->flags & NSS_UDP_ST_FLAG_IPV6) {
+		udp_len = pkt_sz - sizeof(*ipv6h);
+	} else {
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_IP_VERSION]);
+		return;
+	}
+
+	/*
+	 * Allocate SKB with room for full L2+L3+L4 packet.
+	 * The Ethernet header is added below so include ETH_HLEN in skb_sz.
+	 */
+	skb_sz = NSS_UDP_ST_MIN_HEADROOM + pkt_sz + sizeof(struct ethhdr) +
+		 NSS_UDP_ST_MIN_TAILROOM + SMP_CACHE_BYTES;
+
+	skb = dev_alloc_skb(skb_sz);
+	if (!skb) {
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_MEMORY_FAILURE]);
+		return;
+	}
+
+	align_offset = PTR_ALIGN(skb->data, SMP_CACHE_BYTES) - skb->data;
+	skb_reserve(skb, NSS_UDP_ST_MAX_HEADROOM + align_offset + sizeof(uint16_t));
+
+	data = skb_put(skb, udp_len - sizeof(*uh));
+	memset(data, 0, udp_len - sizeof(*uh));
+
+	skb_push(skb, sizeof(*uh));
+	skb_reset_transport_header(skb);
+	uh = udp_hdr(skb);
+	nss_udp_st_generate_udp_hdr(uh, udp_len, rules);
+
+	if (rules->flags & NSS_UDP_ST_FLAG_IPV4) {
+		skb_push(skb, sizeof(*iph));
+		skb_reset_network_header(skb);
+		iph = ip_hdr(skb);
+		nss_udp_st_generate_ipv4_hdr(iph, ip_len, rules);
+		skb->protocol = htons(ETH_P_IP);
+	} else {
+		skb_push(skb, sizeof(*ipv6h));
+		skb_reset_network_header(skb);
+		ipv6h = ipv6_hdr(skb);
+		nss_udp_st_generate_ipv6_hdr(ipv6h, ip_len, rules);
+		skb->protocol = htons(ETH_P_IPV6);
+	}
+
+	/*
+	 * Other headers like PPPoE/VLAN will be added at the
+	 * time of PPE flow creation as per the configured rule.
+	 */
+	nss_udp_st_generate_eth_hdr(skb, (const uint8_t *)rules->dst_mac, (uint8_t *)nss_udp_st_ppe_vp_dev_get()->dev_addr);
+
+	/*
+	 * Set skb->dev to the VP netdevice
+	 */
+	skb->dev = nss_udp_st_ppe_vp_dev_get();
+
+	pr_info("UDP-ST VP: About to xmit skb=%px len=%u data=%px headlen=%u\n",
+		skb, skb->len, skb->data, skb_headlen(skb));
+	pr_info("UDP-ST VP: IP len=%u, pkt_sz=%zu\n",
+		ip_len, pkt_sz);
+
+	*out_skb = skb;
+
+	nss_udp_st_update_stats(ip_len + sizeof(struct ethhdr), 1);
+}
+#endif /* NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE */
 
 /*
  * nss_udp_st_tx_packets()
@@ -371,7 +464,7 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 		return;
 	}
 
-	nss_udp_st_update_stats(ip_len + sizeof(struct ethhdr));
+	nss_udp_st_update_stats(ip_len + sizeof(struct ethhdr), 1);
 }
 
 /*
@@ -416,7 +509,13 @@ static int nss_udp_st_vlan_iface_config(struct net_device *dev)
 		return -1;
 	}
 
+	/* Allowing double tagged VLAN for hw offload */
+#ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
+	if (!(nust.config.flags & NSS_UDP_ST_FLAGS_HW_OFFLOAD) &&
+			(is_vlan_dev(xmit_dev) || xmit_dev->type != ARPHRD_ETHER)) {
+#else
 	if (is_vlan_dev(xmit_dev) || xmit_dev->type != ARPHRD_ETHER) {
+#endif
 		pr_warn("%px: QinQ or non-ethernet VLAN master (%s) is not supported\n", dev,
 				xmit_dev->name);
 		return -1;
@@ -494,8 +593,13 @@ static int nss_udp_st_pppoe_iface_config(struct net_device *dev)
 		xmit_dev = info.dev;
 	}
 
+	nust.pppoe_info.dev = info.dev;
+	nust.pppoe_info.pppoe_session_id = info.pa.sid;
+	memcpy(nust.pppoe_info.remote_mac, info.pa.remote, ETH_ALEN);
+
 fail:
-	dev_put(info.dev);
+	if (ret)
+		dev_put(info.dev);
 	ppp_release_channels(ppp_chan, 1);
 	return ret;
 }
@@ -944,6 +1048,161 @@ static void nss_udp_st_tx_wq_cb(struct work_struct *usw)
 	}
 	put_cpu();
 }
+
+#ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
+/*
+ * nss_udp_st_tx_hw_offload_send_packets()
+ *	Send single packet per rule for hw_offload path
+ */
+static bool nss_udp_st_tx_hw_offload_send_packets(void)
+{
+	struct nss_udp_st_rules *pos = NULL;
+	struct nss_udp_st_rules *n = NULL;
+	int total_count = 0;
+	int failed = 0;
+
+	/*
+	 * Count total rules for EDMA ring distribution
+	 */
+	list_for_each_entry_safe(pos, n, &nust.rules.list, list) {
+		total_count++;
+	}
+
+	if (total_count == 0) {
+		pr_err("UDP-ST: No rules configured for hw_offload\n");
+		return false;
+	}
+
+	pr_info("UDP-ST: Injecting %d packets for hw_offload (one per rule)\n", total_count);
+
+	/*
+	 * Inject one packet per rule
+	 */
+	list_for_each_entry_safe(pos, n, &nust.rules.list, list) {
+		struct sk_buff *skb = NULL;
+		int slot;
+
+		slot = atomic_fetch_add(1, &nust.xmit_idx);
+
+		nss_udp_st_tx_packets_ppe_vp(nust_dev, pos, &skb);
+		if (skb) {
+			if (nss_dp_udp_st_xmit(skb, slot, total_count, pos->vp_num) != 0) {
+				pr_err("UDP-ST: Failed to xmit packet for rule (slot=%d)\n", slot);
+				kfree_skb(skb);
+				atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_PACKET_DROP]);
+				failed++;
+			} else {
+				if (pos->flags & NSS_UDP_ST_FLAG_IPV4) {
+					pr_info("UDP-ST: Injected packet for rule: %pI4:%u -> %pI4:%u (slot=%d)\n",
+						&pos->sip.ip.ipv4, pos->sport,
+						&pos->dip.ip.ipv4, pos->dport, slot);
+				} else {
+					pr_info("UDP-ST: Injected IPv6 packet for rule (slot=%d)\n", slot);
+				}
+			}
+		} else {
+			pr_err("UDP-ST: Failed to create packet for rule\n");
+			failed++;
+		}
+	}
+
+	if (failed > 0) {
+		pr_warn("UDP-ST: %d/%d packet injections failed\n", failed, total_count);
+		return false;
+	}
+
+	pr_info("UDP-ST: Successfully injected %d packets for hw_offload\n", total_count);
+	pr_info("UDP-ST: PPE will now loop these packets at configured rate\n");
+	return true;
+}
+
+/*
+ * nss_udp_st_tx_hw_offload()
+ *	Start hw_offload TX test
+ */
+bool nss_udp_st_tx_hw_offload(void)
+{
+	if (!nss_udp_st_tx_init()) {
+		pr_err("Failed to init hw_offload tx\n");
+		return false;
+	}
+
+	/*
+	 * Initialize L2 overhead
+	 */
+	l2_overhead = sizeof(struct ethhdr);
+
+	/*
+	 * For hw_offload, handle VLAN and PPPoE interfaces
+	 * The PPE flow creation handles the encapsulation, so we just need the base device
+	 */
+	switch (nust_dev->type) {
+	case ARPHRD_PPP:
+		/*
+		 * PPPoE interface - extract the base device
+		 */
+		if (nss_udp_st_pppoe_iface_config(nust_dev) < 0) {
+			pr_err("UDP-ST: Could not configure PPPoE for hw_offload, dev: %s\n", nust_dev->name);
+			dev_put(nust_dev);
+			return false;
+		}
+		l2_overhead += 8; /* PPPoE header + PPP protocol */
+		if (is_vlan_dev(info.dev)) {
+			l2_overhead += VLAN_HLEN;
+		}
+		pr_info("UDP-ST: hw_offload with PPPoE interface: %s (base: %s)\n",
+			nust_dev->name, xmit_dev->name);
+		break;
+
+	case ARPHRD_ETHER:
+		if ((nust_dev->priv_flags & (IFF_EBRIDGE | IFF_OPENVSWITCH))
+			|| ((nust_dev->flags & IFF_MASTER) && (nust_dev->priv_flags & IFF_BONDING))) {
+			pr_err("UDP-ST: Bridge and LAG interfaces not supported for hw_offload, dev: %s\n",
+			       nust_dev->name);
+			dev_put(nust_dev);
+			return false;
+		}
+
+		if (is_vlan_dev(nust_dev)) {
+			/*
+			 * VLAN interface - extract the base device
+			 */
+			if (nss_udp_st_vlan_iface_config(nust_dev) < 0) {
+				pr_err("UDP-ST: Could not configure VLAN for hw_offload, dev: %s\n", nust_dev->name);
+				dev_put(nust_dev);
+				return false;
+			}
+			l2_overhead += VLAN_HLEN;
+			pr_info("UDP-ST: hw_offload with VLAN interface: %s (base: %s)\n",
+				nust_dev->name, xmit_dev->name);
+		} else {
+			xmit_dev = nust_dev;
+		}
+		break;
+
+	default:
+		pr_err("UDP-ST: Unsupported interface type for hw_offload, dev: %s type: %d\n",
+		       nust_dev->name, nust_dev->type);
+		dev_put(nust_dev);
+		return false;
+	}
+
+	pr_info("UDP-ST: hw_offload TX on interface: %s\n", nust_dev->name);
+	pr_info("UDP-ST: Configured rate: %u Mbps (PPE will enforce this)\n", nust.config.rate);
+
+	/*
+	 * Send single packet per rule - PPE handles the rest
+	 */
+	if (!nss_udp_st_tx_hw_offload_send_packets()) {
+		pr_err("UDP-ST: Failed to send packets for hw_offload\n");
+		dev_put(nust_dev);
+		return false;
+	}
+
+	pr_info("UDP-ST: hw_offload TX started successfully\n");
+	return true;
+}
+#endif /* NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE */
 
 /*
  * nss_udp_st_tx()

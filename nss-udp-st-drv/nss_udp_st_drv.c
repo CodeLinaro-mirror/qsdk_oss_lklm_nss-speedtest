@@ -1,18 +1,7 @@
 /*
  **************************************************************************
- * Copyright (c) 2022-2025 Qualcomm Innovation Center, Inc. All rights reserved.
- *
- * Permission to use, copy, modify, and/or distribute this software for
- * any purpose with or without fee is hereby granted, provided that the
- * above copyright notice and this permission notice appear in all copies.
- *
- * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
- * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
- * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
- * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
- * OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * SPDX-License-Identifier: ISC
  **************************************************************************
  */
 
@@ -27,6 +16,10 @@
 #include <ppe_vp_public.h>
 #endif
 #include "nss_udp_st_public.h"
+#ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
+#include <nss_dp_api_if.h>
+#include "nss_udp_st_ppe.h"
+#endif
 
 #define DEVICE_NAME "nss_udp_st"
 #define CLASS_NAME "nss_udp_st"
@@ -38,7 +31,7 @@ static int dump_major;
 struct nss_udp_st nust;
 struct delayed_work nss_udp_st_tx_delayed_work;
 struct workqueue_struct *work_queue;
-void nss_udp_st_update_stats(size_t pkt_size);
+void nss_udp_st_update_stats(size_t pkt_size, uint64_t num_pkts);
 uint64_t nss_udp_st_tx_num_pkt;
 struct net_device *nust_dev;
 
@@ -106,10 +99,27 @@ static void nss_udp_st_clear_rules(void)
 			nss_udp_st_tun_destroy(pos->tun_dev);
 		}
 #endif
+#ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
+		if (nust.config.flags & NSS_UDP_ST_FLAGS_HW_OFFLOAD) {
+			/*
+			 * Destroy PPE flow rule for the UDP-ST rule
+			 */
+			nss_udp_st_destroy_ppe_flow(pos);
+			pos->ppe_dev = NULL;
+		}
+#endif
 		list_del(&pos->list);
 		kfree(pos);
 	}
 	nust.rule_count = 0;
+
+	/*
+	 * Release the PPPoE underlying device reference taken.
+	 */
+	if (nust.pppoe_info.dev) {
+		dev_put(nust.pppoe_info.dev);
+		nust.pppoe_info.dev = NULL;
+	}
 }
 
 /*
@@ -138,8 +148,12 @@ static ssize_t nss_udp_st_read(struct file *file, char __user *buf,
 				size_t count, loff_t *ppos)
 {
 	int copied = 0;
+
 	copied = copy_to_user(buf, &nust.stats, sizeof(struct nss_udp_st_stats));
-	return copied;
+	if (copied) {
+		return -EFAULT;
+	}
+	return sizeof(struct nss_udp_st_stats);
 }
 
 /*
@@ -199,6 +213,9 @@ static ssize_t nss_udp_st_write(struct file *file, const char __user *buf,
 	rules->seq = 0;
 	rules->tun_dev = NULL;
 	rules->vp_num = -1;
+#ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
+	rules->ppe_dev = NULL;
+#endif
 
 	if (nust.bitmap_curr == 0) {
 		nust.bitmap_curr = nust.config.cpu_bitmap;
@@ -209,6 +226,7 @@ static ssize_t nss_udp_st_write(struct file *file, const char __user *buf,
 	nust.bitmap_curr &= ~(1 << cpu);
 	pr_debug("CPU: %d, nust_bitmap %u base: nust.config.cpu_bitmap %u ", cpu, nust.bitmap_curr, nust.config.cpu_bitmap);
 	rules->cpu = cpu;
+
 	list_add_tail(&(rules->list), &(nust.rules.list));
 	nust.rule_count++;
 
@@ -227,8 +245,14 @@ static void nss_udp_st_reset_stats(void)
 	memset(&nust.stats, 0, sizeof(struct nss_udp_st_stats));
 	nust.stats.first_pkt = true;
 	nss_udp_st_tx_num_pkt = 0;
+	atomic_set(&nust.xmit_idx, 0);
 	atomic64_set(&nust.stats.p_stats.min_latency, U64_MAX);
 	atomic64_set(&nust.stats.p_stats.max_latency, 0);
+
+#ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
+	if (nust.config.flags & NSS_UDP_ST_FLAGS_HW_OFFLOAD)
+		nss_udp_st_ppe_reset_policer_stats();
+#endif
 
 	/*
 	 * Sequence counters are maintained per connection
@@ -268,6 +292,42 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 			return -EINVAL;
 		}
 
+#ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
+		if (nust.config.flags & NSS_UDP_ST_FLAGS_HW_OFFLOAD) {
+			/*
+			 * Timestamp feature is not supported with hardware offload.
+			 */
+			if (nust.config.flags & NSS_UDP_ST_FLAGS_TIMESTAMP) {
+				pr_err("UDP-ST: Timestamp feature is not supported with hardware offload\n");
+				pr_err("UDP-ST: Please disable either hardware offload or timestamp feature\n");
+				return -EINVAL;
+			}
+
+			/*
+			 * Initialize the dedicated EDMA UDP-ST TX ring context.
+			 */
+			ret = nss_dp_udp_st_init();
+			if (ret != 0) {
+				pr_err("UDP-ST: EDMA TX ring init failed: %d\n", ret);
+				return -EINVAL;
+			}
+
+			/*
+			 * VP allocation for PPE offload
+			 */
+			if (!nss_udp_st_ppe_vp_alloc(nust.config.cpu_bitmap)) {
+				pr_err("UDP-ST: PPE VP allocation failed\n");
+				nust.mode = NSS_UDP_ST_STOP;
+				return -EINVAL;
+			}
+
+			/*
+			 * Initialize policer if rate limiting is configured
+			 */
+			nss_udp_st_ppe_policer_init();
+		}
+#endif
+
 		break;
 
 	case NSS_UDP_ST_IOCTL_START_TX:
@@ -289,10 +349,58 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 		}
 
 		nust.mode = NSS_UDP_ST_START;
-		if (!nss_udp_st_tx()) {
-			nust.mode = NSS_UDP_ST_STOP;
-			pr_err("Unable to start Tx test\n");
-			return -EINVAL;
+
+#ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
+		if (nust.config.flags & NSS_UDP_ST_FLAGS_HW_OFFLOAD) {
+			struct nss_udp_st_rules *pos = NULL;
+			struct nss_udp_st_rules *n = NULL;
+			ppe_vp_num_t vp_num;
+
+			/*
+			 * Propagate VP number and VP netdev to every rule
+			 */
+			vp_num = nss_udp_st_ppe_vp_num_get();
+			list_for_each_entry_safe(pos, n, &nust.rules.list, list) {
+				pos->vp_num = vp_num;
+				pos->ppe_dev = nss_udp_st_ppe_vp_dev_get();
+			}
+
+			/*
+			 * Create PPE flow rules (VP as rx_if, WAN as tx_if).
+			 */
+			ret = nss_udp_st_ppe_create_flows(NSS_UDP_ST_PPE_TX_DIR);
+			if (ret < 0) {
+				pr_err("UDP-ST: PPE flow creation failed\n");
+				nust.mode = NSS_UDP_ST_STOP;
+				return -EINVAL;
+			}
+
+			/*
+			 * Start the 1-second periodic PPE throughput timer.
+			 * Every second it queries PPE hardware counters.
+			 */
+			nss_udp_st_ppe_throughput_timer_start();
+
+			/*
+			 * Use separate hw_offload TX path
+			 */
+			if (!nss_udp_st_tx_hw_offload()) {
+				nust.mode = NSS_UDP_ST_STOP;
+				nss_udp_st_ppe_throughput_timer_stop();
+				pr_err("Unable to start HW offload Tx test\n");
+				return -EINVAL;
+			}
+		} else
+#endif
+		{
+			/*
+			 * Software path
+			 */
+			if (!nss_udp_st_tx()) {
+				nust.mode = NSS_UDP_ST_STOP;
+				pr_err("Unable to start Tx test\n");
+				return -EINVAL;
+			}
 		}
 		break;
 
@@ -304,6 +412,21 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 
 		nss_udp_st_reset_stats();
 		nust.dir = NSS_UDP_ST_RX;
+
+#ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
+		if (nust.config.flags & NSS_UDP_ST_FLAGS_HW_OFFLOAD) {
+			/*
+			 * Create PPE flow rules for RX direction
+			 */
+			ret = nss_udp_st_ppe_create_flows(NSS_UDP_ST_PPE_RX_DIR);
+			if (ret < 0) {
+				pr_err("UDP-ST: PPE flow creation failed\n");
+				return -EINVAL;
+			}
+
+			nss_udp_st_ppe_throughput_timer_start();
+		}
+#endif
 
 		/*
 		 * register pre-routing hook for rx path
@@ -335,10 +458,61 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 			 */
 			nf_unregister_net_hooks(&init_net, nss_udp_st_nf_ipv4_ops, ARRAY_SIZE(nss_udp_st_nf_ipv4_ops));
 			nf_unregister_net_hooks(&init_net, nss_udp_st_nf_ipv6_ops, ARRAY_SIZE(nss_udp_st_nf_ipv6_ops));
+#ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
+			if (nust.config.flags & NSS_UDP_ST_FLAGS_HW_OFFLOAD)
+				nss_udp_st_ppe_throughput_timer_stop();
+#endif
 		} else {
-			nss_udp_st_hrtimer_cleanup();
+#ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
+			if (nust.config.flags & NSS_UDP_ST_FLAGS_HW_OFFLOAD) {
+				/*
+				 * Stop the PPE timer
+				 */
+				nss_udp_st_ppe_throughput_timer_stop();
+
+				/*
+				 * Unregister the PPE stats-sync callback before
+				 * destroying the flows so no stale callbacks are there.
+				 */
+				nss_dp_udp_st_reset_indices();
+			} else
+#endif
+			{
+				/*
+				 * Cleanup hr_timer only for software path
+				 */
+				nss_udp_st_hrtimer_cleanup();
+			}
 		}
+
+		/*
+		 * Destroy PPE flows
+		 */
 		nss_udp_st_clear_rules();
+
+#ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
+		if (nust.config.flags & NSS_UDP_ST_FLAGS_HW_OFFLOAD) {
+			/*
+			 * Unregister the policer flow callbacks.
+			 */
+			nss_udp_st_ppe_policer_detach();
+
+			/*
+			 * Destroy the global VP-level policer if it exists.
+			 */
+			nss_udp_st_ppe_policer_destroy();
+
+			/*
+			 * Release the nust_dev ref taken.
+			 */
+			if (nust_dev) {
+				dev_put(nust_dev);
+				nust_dev = NULL;
+			}
+		}
+#endif
+
+		nss_udp_st_reset_stats();
 		break;
 
 	case NSS_UDP_ST_IOCTL_RATE_CHANGE:
@@ -426,6 +600,25 @@ reg_failed:
 static void __exit nss_udp_st_exit(void)
 {
 	nust.mode = NSS_UDP_ST_STOP;
+
+#ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
+	/*
+	 * Perform the full hw-offload teardown unconditionally.
+	 */
+	nss_udp_st_ppe_throughput_timer_stop();
+	nss_dp_udp_st_reset_indices();
+	nss_udp_st_clear_rules();
+	nss_udp_st_ppe_policer_detach();
+	if (nust_dev) {
+		dev_put(nust_dev);
+		nust_dev = NULL;
+	}
+	nss_dp_udp_st_deinit();
+	nss_udp_st_ppe_vp_free();
+#else
+	nss_udp_st_clear_rules();
+#endif
+
 	device_destroy(dump_class, MKDEV(dump_major, 0));
 	class_destroy(dump_class);
 	unregister_chrdev(dump_major, DEVICE_NAME);
@@ -434,8 +627,9 @@ static void __exit nss_udp_st_exit(void)
 /*
  * nss_udp_st_update_stats()
  *  update packet and time stats for tx/rx
+ *  num_pkts: number of packets to add (1 for software path, >1 for PPE batch)
  */
-void nss_udp_st_update_stats(size_t pkt_size)
+void nss_udp_st_update_stats(size_t pkt_size, uint64_t num_pkts)
 {
 	long time_curr;
 	long time_start;
@@ -446,13 +640,13 @@ void nss_udp_st_update_stats(size_t pkt_size)
 	}
 
 	if (nust.dir == NSS_UDP_ST_TX) {
-		atomic64_inc(&nust.stats.p_stats.tx_packets);
-		atomic64_add(pkt_size, &nust.stats.p_stats.tx_bytes);
+		atomic64_add(num_pkts, &nust.stats.p_stats.tx_packets);
+		atomic64_add((long long)(pkt_size * num_pkts), &nust.stats.p_stats.tx_bytes);
 	}
 
 	if (nust.dir == NSS_UDP_ST_RX) {
-		atomic64_inc(&nust.stats.p_stats.rx_packets);
-		atomic64_add(pkt_size, &nust.stats.p_stats.rx_bytes);
+		atomic64_add(num_pkts, &nust.stats.p_stats.rx_packets);
+		atomic64_add((long long)(pkt_size * num_pkts), &nust.stats.p_stats.rx_bytes);
 	}
 
 	atomic64_set(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_CURRENT], (jiffies * div_u64(1000,HZ)));

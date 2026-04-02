@@ -16,4 +16,13 @@ ifdef NSS_UDP_ST_DRV_VP
 ccflags-y += -DNSS_UDP_ST_DRV_VP_ENABLE
 endif
 
+ifdef NSS_UDP_ST_DRV_HW_OFFLOAD
+ccflags-y += -DNSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
+nss-udp-st-objs += nss_udp_st_ppe.o
+endif
+
+ifdef NSS_DP_SYMVERS
+KBUILD_EXTRA_SYMBOLS += $(NSS_DP_SYMVERS)
+endif
+
 ccflags-y += -Werror -Wall -I$(obj) -I$(obj)/exports

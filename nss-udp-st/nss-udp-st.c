@@ -1,18 +1,7 @@
 /*
  **************************************************************************
- * Copyright (c) 2022, 2024-2025 Qualcomm Innovation Center, Inc. All rights reserved.
- *
- * Permission to use, copy, modify, and/or distribute this software for
- * any purpose with or without fee is hereby granted, provided that the
- * above copyright notice and this permission notice appear in all copies.
- *
- * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
- * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
- * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
- * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
- * OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * SPDX-License-Identifier: ISC
  **************************************************************************
  */
 
@@ -47,6 +36,7 @@ struct option long_options[] =
 	{"dscp", required_argument, NULL, 'c'},
 	{"timestamp", no_argument, NULL, '0'},
 	{"vp", no_argument, NULL, 'v'},
+	{"hw_offload", no_argument, NULL, 'p'},
 	{"help", no_argument, NULL, 'h'},
 	{"cpu_bitmap", required_argument, NULL, 'u'},
 	{"burst", required_argument, NULL, 'g'},
@@ -349,8 +339,9 @@ static int nss_udp_st_stats(void)
 		}
 
 		fprintf(fp, "\nPacket Stats\n");
-		fprintf(fp, "\ttx_packets = %lld packets\n",st_stat.p_stats.tx_packets);
-		fprintf(fp, "\ttx_bytes   = %lld bytes\n",st_stat.p_stats.tx_bytes);
+		fprintf(fp, "\ttx_packets = %lld packets\n", st_stat.p_stats.tx_packets);
+		fprintf(fp, "\ttx_bytes   = %lld bytes\n", st_stat.p_stats.tx_bytes);
+
 		bytes = st_stat.p_stats.tx_bytes;
 	} else if (st_cfg.type == NSS_UDP_ST_RX) {
 		fp = fopen(NSS_UDP_ST_RX_STATS, "w");
@@ -360,8 +351,9 @@ static int nss_udp_st_stats(void)
 		}
 
 		fprintf(fp, "\nPacket Stats\n\n");
-		fprintf(fp, "\trx_packets = %lld packets\n",st_stat.p_stats.rx_packets);
-		fprintf(fp, "\trx_bytes   = %lld bytes\n",st_stat.p_stats.rx_bytes);
+		fprintf(fp, "\trx_packets = %lld packets\n", st_stat.p_stats.rx_packets);
+		fprintf(fp, "\trx_bytes   = %lld bytes\n", st_stat.p_stats.rx_bytes);
+
 		bytes = st_stat.p_stats.rx_bytes;
 	} else {
 		printf("type error\n");
@@ -554,6 +546,10 @@ static int nss_udp_st_get_opt(int args, char **argv)
 			st_param.flags |= NSS_UDP_ST_FLAGS_VP;
 			break;
 
+		case 'p':
+			st_param.flags |= NSS_UDP_ST_FLAGS_HW_OFFLOAD;
+			break;
+
 		case 'h':
 			nss_udp_st_usage();
 			break;
@@ -610,6 +606,16 @@ int main(int args, char **argv)
 		nss_udp_st_list();
 	} else if (!strcmp(st_cfg.mode,"clear")) {
 		nss_udp_st_clear();
+		/*
+		 * Reset kernel stats so PPE stats do not carry over
+		 * to the next test run.  Open the device only if the module
+		 * is already loaded; ignore failure if it is not.
+		 */
+		st_cfg.handle = open(NSS_UDP_ST_DEV, O_RDWR);
+		if (st_cfg.handle >= 0) {
+			nss_udp_st_reset_stats();
+			close(st_cfg.handle);
+		}
 	} else if (!strcmp(st_cfg.mode,"start")) {
 		st_cfg.handle = open(NSS_UDP_ST_DEV, O_RDWR);
 		nss_udp_st_start();
