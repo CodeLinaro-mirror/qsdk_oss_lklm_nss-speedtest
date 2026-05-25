@@ -379,7 +379,11 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 			 * Start the 1-second periodic PPE throughput timer.
 			 * Every second it queries PPE hardware counters.
 			 */
-			nss_udp_st_ppe_throughput_timer_start();
+			if (!nss_udp_st_ppe_throughput_timer_start()) {
+				nust.mode = NSS_UDP_ST_STOP;
+				pr_err("Unable to start throughput timer\n");
+				return -EINVAL;
+			}
 
 			/*
 			 * Use separate hw_offload TX path
@@ -424,7 +428,10 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 				return -EINVAL;
 			}
 
-			nss_udp_st_ppe_throughput_timer_start();
+			if (!nss_udp_st_ppe_throughput_timer_start()) {
+				pr_err("UDP-ST: PPE throughput timer start failed\n");
+                                return -EINVAL;
+			}
 		}
 #endif
 

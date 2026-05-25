@@ -306,9 +306,19 @@ static void nss_udp_st_tx_packets_ppe_vp(struct net_device *ndev, struct nss_udp
 	}
 
 	/*
-	 * Other headers like PPPoE/VLAN will be added at the
-	 * time of PPE flow creation as per the configured rule.
+	 * Push VLAN header if bridge port is a VLAN device for SFU.
 	 */
+	if (rules->bridge_vlan_id) {
+		struct vlan_hdr *vhdr;
+
+		skb_push(skb, VLAN_HLEN);
+		vhdr = (struct vlan_hdr *)skb->data;
+		vhdr->h_vlan_TCI = htons(rules->bridge_vlan_id);
+		vhdr->h_vlan_encapsulated_proto = skb->protocol;
+		skb->protocol = htons(ETH_P_8021Q);
+		pr_debug("UDP-ST: Added VLAN header with VID %u to SKB\n", rules->bridge_vlan_id);
+	}
+
 	nss_udp_st_generate_eth_hdr(skb, (const uint8_t *)rules->dst_mac, (uint8_t *)nss_udp_st_ppe_vp_dev_get()->dev_addr);
 
 	/*

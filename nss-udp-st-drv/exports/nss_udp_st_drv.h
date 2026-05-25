@@ -225,6 +225,7 @@ struct nss_udp_st_rules {
 	void *policer_ctx;		/* Per-flow policer context */
 	uint32_t policer_rule_id;	/* Per-flow policer rule ID */
 	uint64_t policer_prev_rpc;	/* Previous cumulative red-packet count for delta calculation */
+	uint16_t bridge_vlan_id;	/* VLAN ID if bridge port is a VLAN device (0 if not VLAN) */
 };
 
 /*

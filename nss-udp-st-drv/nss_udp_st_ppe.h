@@ -28,7 +28,7 @@ typedef struct nss_udp_st_ppe_vp_ctx {
 	ppe_vp_num_t vp_num;			/* VP number */
 	struct ppe_drv_policer_acl *policer_acl_ctx;	/* ACL policer context */
 	uint16_t policer_rule_id;		/* Policer ID */
-} nss_udp_st_ppe_vp_ctx_t;
+} nss_udp_st_ppe_ctx_t;
 
 bool nss_udp_st_ppe_vp_alloc(uint8_t core_mask);
 void nss_udp_st_ppe_vp_free(void);
@@ -41,7 +41,7 @@ struct net_device *nss_udp_st_ppe_vp_dev_get(void);
 int nss_udp_st_ppe_create_flows(nss_udp_st_ppe_dir_t dir);
 void nss_udp_st_destroy_ppe_flow(struct nss_udp_st_rules *rules);
 
-void nss_udp_st_ppe_throughput_timer_start(void);
+bool nss_udp_st_ppe_throughput_timer_start(void);
 void nss_udp_st_ppe_throughput_timer_stop(void);
 void nss_udp_st_ppe_reset_policer_stats(void);
 

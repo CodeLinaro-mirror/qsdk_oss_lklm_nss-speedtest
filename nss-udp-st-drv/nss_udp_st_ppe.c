@@ -9,6 +9,7 @@
 #include <linux/inetdevice.h>
 #include <linux/if_arp.h>
 #include <linux/if_vlan.h>
+#include <linux/if_bridge.h>
 #include <linux/workqueue.h>
 #include <linux/math64.h>
 #include <net/neighbour.h>
@@ -36,7 +37,7 @@ static struct delayed_work ppe_stats_work;
 static struct workqueue_struct *ppe_stats_wq;
 static uint32_t g_policer_rule_id_counter = NSS_UDP_ST_PPE_POLICER_RULE_ID_BASE;
 
-static nss_udp_st_ppe_vp_ctx_t g_udp_st_ppe_ctx = {
+static nss_udp_st_ppe_ctx_t g_udp_st_ppe_ctx = {
 	.vp_dev = NULL,
 	.vp_num = -1,
 	.policer_acl_ctx = NULL,
@@ -110,7 +111,8 @@ static void nss_udp_st_ppe_netdev_setup(struct net_device *dev)
  */
 static bool nss_udp_st_ppe_vp_dst_cb(struct ppe_vp_cb_info *info, void *cb_data)
 {
-	dev_kfree_skb_any(info->skb);
+	if (info->skb)
+		dev_kfree_skb_any(info->skb);
 	return true;
 }
 
@@ -330,6 +332,65 @@ void nss_udp_st_ppe_policer_detach(void)
 }
 
 /*
+ * nss_udp_st_ppe_bridge_get_port()
+ *	Resolve the physical bridge port for dest_mac by walking the bridge's
+ *	bottom devices and querying the FDB.
+ *	If the port is a VLAN device, extract the real device and VLAN ID.
+ */
+static struct net_device *nss_udp_st_ppe_bridge_get_port(struct net_device *br_dev,
+							  const uint8_t *dest_mac,
+							  uint16_t *vid_out)
+{
+	struct net_device *found_dev = NULL;
+	struct net_device *real_dev = NULL;
+	uint16_t vid = 0;
+
+	*vid_out = 0;
+
+	rcu_read_lock();
+	found_dev = br_fdb_find_vid_by_mac(br_dev, (u8 *)dest_mac, &vid);
+
+	if (!found_dev) {
+		pr_warn("UDP-ST: %s: no bridge port found in %s for MAC %pM\n",
+		       __func__, br_dev->name, dest_mac);
+		rcu_read_unlock();
+		return NULL;
+	}
+
+	pr_info("UDP-ST: %s: resolved bridge %s port -> %s for MAC %pM (fdb_vid=%u)\n",
+	       __func__, br_dev->name, found_dev->name, dest_mac, vid);
+
+	/*
+	 * If the port device is a VLAN device, extract the real physical device
+	 * and VLAN ID.
+	 */
+	if (is_vlan_dev(found_dev)) {
+		vid = vlan_dev_vlan_id(found_dev);
+		real_dev = vlan_dev_next_dev(found_dev);
+		if (real_dev) {
+			pr_info("UDP-ST: %s: port %s is VLAN device, real_dev=%s vid=%u\n",
+			       __func__, found_dev->name, real_dev->name, vid);
+			dev_hold(real_dev);
+			rcu_read_unlock();
+			*vid_out = vid;
+			return real_dev;
+		} else {
+			pr_err("UDP-ST: %s: VLAN device %s has no real device\n",
+			       __func__, found_dev->name);
+			rcu_read_unlock();
+			return NULL;
+		}
+	}
+
+	/*
+	 * Not a VLAN device, return the port device as-is
+	 */
+	dev_hold(found_dev);
+	rcu_read_unlock();
+	return found_dev;
+}
+
+/*
  * nss_udp_st_ppe_get_wan_interface()
  *	Get WAN interface via ARP/route lookup on the destination IP.
  */
@@ -388,7 +449,6 @@ static struct net_device *nss_udp_st_ppe_get_wan_interface(uint32_t dest_ip, uin
 	neigh_release(neigh);
 	dev_hold(wan_dev);
 	ip_rt_put(rt);
-
 	return wan_dev;
 }
 
@@ -669,8 +729,10 @@ static int nss_udp_st_ppe_create_flow_v4(struct nss_udp_st_rules *rule, nss_udp_
 	struct ppe_drv_v4_rule_create *create;
 	struct net_device *wan_dev;
 	struct net_device *vp_dev;
+	struct net_device *br_dev;
+	struct net_device *port_dev = NULL;
 	uint8_t dest_mac[ETH_ALEN];
-	ppe_drv_iface_t vp_iface_idx, wan_iface_idx, phy_iface_idx;
+	ppe_drv_iface_t vp_iface_idx, wan_iface_idx, phy_iface_idx, port_iface_idx;
 	ppe_drv_ret_t ret;
 
 	/*
@@ -710,11 +772,46 @@ static int nss_udp_st_ppe_create_flow_v4(struct nss_udp_st_rules *rule, nss_udp_
 	}
 
 	/*
+	 * Finding the bottom interface in case of wan is bridge
+	 */
+	port_iface_idx = -1;
+	port_dev = NULL;
+	rule->bridge_vlan_id = 0;
+	br_dev = wan_dev;
+	if (netif_is_bridge_master(br_dev)) {
+		uint16_t bridge_vid = 0;
+		port_dev = nss_udp_st_ppe_bridge_get_port(br_dev, dest_mac, &bridge_vid);
+		if (!port_dev) {
+			pr_err("UDP-ST: bridge %s: no port found for MAC %pM\n",
+			       br_dev->name, dest_mac);
+			dev_put(wan_dev);
+			return -EINVAL;
+		}
+		port_iface_idx = ppe_drv_iface_idx_get_by_dev(port_dev);
+		if (port_iface_idx < 0) {
+			pr_err("UDP-ST: failed to get PPE iface for bridge port %s\n",
+			       port_dev->name);
+			dev_put(port_dev);
+			dev_put(wan_dev);
+			return -EINVAL;
+		}
+		/*
+		 * Store the bridge VLAN ID in the rule for use in TX path
+		 */
+		rule->bridge_vlan_id = bridge_vid;
+		if (bridge_vid) {
+			pr_info("UDP-ST: Bridge port has VLAN ID %u, will be used in TX path\n", bridge_vid);
+		}
+	}
+
+	/*
 	 * If WAN device is PPPoE, extract PPPoE channel information.
 	 */
 	if (wan_dev->type == ARPHRD_PPP && !nust.pppoe_info.dev) {
 		if (nss_udp_st_ppe_pppoe_channel_get(wan_dev) < 0) {
 			pr_err("UDP-ST: Failed to extract PPPoE channel for device: %s\n", wan_dev->name);
+			if (port_dev)
+				dev_put(port_dev);
 			dev_put(wan_dev);
 			return -EINVAL;
 		}
@@ -725,6 +822,8 @@ static int nss_udp_st_ppe_create_flow_v4(struct nss_udp_st_rules *rule, nss_udp_
 	 */
 	create = kzalloc(sizeof(*create), GFP_KERNEL);
 	if (!create) {
+		if (port_dev)
+			dev_put(port_dev);
 		dev_put(wan_dev);
 		return -ENOMEM;
 	}
@@ -749,6 +848,8 @@ static int nss_udp_st_ppe_create_flow_v4(struct nss_udp_st_rules *rule, nss_udp_
 		pr_err("UDP-ST: VLAN rule fill failed for WAN dev: %s\n",
 		       wan_dev->name);
 		kfree(create);
+		if (port_dev)
+			dev_put(port_dev);
 		dev_put(wan_dev);
 		return -EINVAL;
 	}
@@ -767,6 +868,8 @@ static int nss_udp_st_ppe_create_flow_v4(struct nss_udp_st_rules *rule, nss_udp_
 		pr_err("UDP-ST: PPPoE rule fill failed for WAN dev: %s\n",
 		       wan_dev->name);
 		kfree(create);
+		if (port_dev)
+			dev_put(port_dev);
 		dev_put(wan_dev);
 		return -EINVAL;
 	}
@@ -796,7 +899,15 @@ static int nss_udp_st_ppe_create_flow_v4(struct nss_udp_st_rules *rule, nss_udp_
 		create->top_rule.rx_if = vp_iface_idx;
 		create->top_rule.tx_if = wan_iface_idx;
 
-		create->rule_flags = PPE_DRV_V4_RULE_FLAG_FLOW_VALID |
+		/*
+		 * Bridge case
+		 */
+		if (port_iface_idx >= 0) {
+			create->top_rule.tx_if = wan_iface_idx;
+			create->conn_rule.tx_if = port_iface_idx;
+		}
+
+		create->rule_flags |= PPE_DRV_V4_RULE_FLAG_FLOW_VALID |
 					PPE_DRV_V4_RULE_FLAG_RETURN_VALID |
 					PPE_DRV_V4_RULE_FLAG_UDP_ST_TX_FLOW;
 
@@ -830,6 +941,14 @@ static int nss_udp_st_ppe_create_flow_v4(struct nss_udp_st_rules *rule, nss_udp_
 
 		create->top_rule.rx_if = wan_iface_idx;
 		create->top_rule.tx_if = vp_iface_idx;
+
+		/*
+		 * Bridge case
+		 */
+		if (port_iface_idx >= 0) {
+			create->top_rule.rx_if = wan_iface_idx;
+			create->conn_rule.rx_if = port_iface_idx;
+		}
 
 		create->rule_flags = PPE_DRV_V4_RULE_FLAG_FLOW_VALID |
 					PPE_DRV_V4_RULE_FLAG_RETURN_VALID |
@@ -872,6 +991,8 @@ static int nss_udp_st_ppe_create_flow_v4(struct nss_udp_st_rules *rule, nss_udp_
 	if (ret != PPE_DRV_RET_SUCCESS) {
 		pr_err("Failed to create PPE IPv4 flow, ret: %d in %d direction\n", ret, dir);
 		kfree(create);
+		if (port_dev)
+			dev_put(port_dev);
 		dev_put(wan_dev);
 		return -EINVAL;
 	}
@@ -883,9 +1004,13 @@ static int nss_udp_st_ppe_create_flow_v4(struct nss_udp_st_rules *rule, nss_udp_
 	pr_info("  VP  device: %s (iface_idx: %d, vp_num: %d)\n",
 		vp_dev->name, vp_iface_idx, g_udp_st_ppe_ctx.vp_num);
 	pr_info("  WAN device: %s (iface_idx: %d)\n", wan_dev->name, wan_iface_idx);
+	if (port_dev)
+		pr_info("  Bridge port: %s (iface_idx: %d)\n", port_dev->name, port_iface_idx);
 	pr_info("  Dest MAC: %pM\n", dest_mac);
 
 	kfree(create);
+	if (port_dev)
+		dev_put(port_dev);
 	dev_put(wan_dev);
 	return 0;
 }
@@ -899,8 +1024,9 @@ static int nss_udp_st_ppe_create_flow_v6(struct nss_udp_st_rules *rule, nss_udp_
 	struct ppe_drv_v6_rule_create *create;
 	struct net_device *wan_dev;
 	struct net_device *vp_dev;
+	struct net_device *port_dev = NULL;
 	uint8_t dest_mac[ETH_ALEN];
-	ppe_drv_iface_t vp_iface_idx, wan_iface_idx, phy_iface_idx;
+	ppe_drv_iface_t vp_iface_idx, wan_iface_idx, phy_iface_idx, port_iface_idx;
 	ppe_drv_ret_t ret;
 
 	vp_dev = g_udp_st_ppe_ctx.vp_dev;
@@ -933,12 +1059,46 @@ static int nss_udp_st_ppe_create_flow_v6(struct nss_udp_st_rules *rule, nss_udp_
 	}
 
 	/*
+	 * Finding the bottom interface in case of wan is bridge
+	 */
+	port_iface_idx = -1;
+	port_dev = NULL;
+	rule->bridge_vlan_id = 0;
+	if (netif_is_bridge_master(wan_dev)) {
+		uint16_t bridge_vid = 0;
+		port_dev = nss_udp_st_ppe_bridge_get_port(wan_dev, dest_mac, &bridge_vid);
+		if (!port_dev) {
+			pr_err("UDP-ST: bridge %s: no port found for MAC %pM (v6)\n",
+			       wan_dev->name, dest_mac);
+			dev_put(wan_dev);
+			return -EINVAL;
+		}
+		port_iface_idx = ppe_drv_iface_idx_get_by_dev(port_dev);
+		if (port_iface_idx < 0) {
+			pr_err("UDP-ST: failed to get PPE iface for bridge port %s (v6)\n",
+			       port_dev->name);
+			dev_put(port_dev);
+			dev_put(wan_dev);
+			return -EINVAL;
+		}
+		/*
+		 * Store the bridge VLAN ID in the rule for use in TX path
+		 */
+		rule->bridge_vlan_id = bridge_vid;
+		if (bridge_vid) {
+			pr_info("UDP-ST: Bridge port has VLAN ID %u, will be used in TX path (v6)\n", bridge_vid);
+		}
+	}
+
+	/*
 	 * If WAN device is PPPoE, extract PPPoE channel information.
 	 */
 	if (wan_dev->type == ARPHRD_PPP && !nust.pppoe_info.dev) {
 		if (nss_udp_st_ppe_pppoe_channel_get(wan_dev) < 0) {
 			pr_err("UDP-ST: Failed to extract PPPoE channel for device: %s\n",
 			       wan_dev->name);
+			if (port_dev)
+				dev_put(port_dev);
 			dev_put(wan_dev);
 			return -EINVAL;
 		}
@@ -946,6 +1106,8 @@ static int nss_udp_st_ppe_create_flow_v6(struct nss_udp_st_rules *rule, nss_udp_
 
 	create = kzalloc(sizeof(*create), GFP_KERNEL);
 	if (!create) {
+		if (port_dev)
+			dev_put(port_dev);
 		dev_put(wan_dev);
 		return -ENOMEM;
 	}
@@ -968,6 +1130,8 @@ static int nss_udp_st_ppe_create_flow_v6(struct nss_udp_st_rules *rule, nss_udp_
 	if (ret < 0) {
 		pr_err("UDP-ST: v6 VLAN rule fill failed for WAN dev: %s\n", wan_dev->name);
 		kfree(create);
+		if (port_dev)
+			dev_put(port_dev);
 		dev_put(wan_dev);
 		return -EINVAL;
 	}
@@ -985,6 +1149,8 @@ static int nss_udp_st_ppe_create_flow_v6(struct nss_udp_st_rules *rule, nss_udp_
 	if (ret < 0) {
 		pr_err("UDP-ST: v6 PPPoE rule fill failed for WAN dev: %s\n", wan_dev->name);
 		kfree(create);
+		if (port_dev)
+			dev_put(port_dev);
 		dev_put(wan_dev);
 		return -EINVAL;
 	}
@@ -1009,6 +1175,14 @@ static int nss_udp_st_ppe_create_flow_v6(struct nss_udp_st_rules *rule, nss_udp_
 
 		create->top_rule.rx_if = vp_iface_idx;
 		create->top_rule.tx_if = wan_iface_idx;
+
+		/*
+		 * Bridge case
+		 */
+		if (port_iface_idx >= 0) {
+			create->top_rule.tx_if = wan_iface_idx;
+			create->conn_rule.tx_if = port_iface_idx;
+		}
 
 		create->rule_flags = PPE_DRV_V6_RULE_FLAG_FLOW_VALID |
 				     PPE_DRV_V6_RULE_FLAG_RETURN_VALID |
@@ -1039,6 +1213,14 @@ static int nss_udp_st_ppe_create_flow_v6(struct nss_udp_st_rules *rule, nss_udp_
 
 		create->top_rule.rx_if = wan_iface_idx;
 		create->top_rule.tx_if = vp_iface_idx;
+
+		/*
+		 * Bridge case
+		 */
+		if (port_iface_idx >= 0) {
+			create->top_rule.rx_if = wan_iface_idx;
+			create->conn_rule.rx_if = port_iface_idx;
+		}
 
 		create->rule_flags = PPE_DRV_V6_RULE_FLAG_FLOW_VALID |
 				     PPE_DRV_V6_RULE_FLAG_RETURN_VALID |
@@ -1081,6 +1263,8 @@ static int nss_udp_st_ppe_create_flow_v6(struct nss_udp_st_rules *rule, nss_udp_
 	kfree(create);
 	if (ret != PPE_DRV_RET_SUCCESS) {
 		pr_err("Failed to create PPE IPv6 flow, ret: %d in %d direction\n", ret, dir);
+		if (port_dev)
+			dev_put(port_dev);
 		dev_put(wan_dev);
 		return -EINVAL;
 	}
@@ -1089,8 +1273,12 @@ static int nss_udp_st_ppe_create_flow_v6(struct nss_udp_st_rules *rule, nss_udp_
 	pr_info("  VP  device: %s (iface_idx: %d, vp_num: %d)\n",
 		vp_dev->name, vp_iface_idx, g_udp_st_ppe_ctx.vp_num);
 	pr_info("  WAN device: %s (iface_idx: %d)\n", wan_dev->name, wan_iface_idx);
+	if (port_dev)
+		pr_info("  Bridge port: %s (iface_idx: %d)\n", port_dev->name, port_iface_idx);
 	pr_info("  Dest MAC: %pM\n", dest_mac);
 
+	if (port_dev)
+		dev_put(port_dev);
 	dev_put(wan_dev);
 	return 0;
 }
@@ -1390,17 +1578,17 @@ void nss_udp_st_ppe_reset_policer_stats(void)
  * nss_udp_st_ppe_throughput_timer_start()
  *	Create the per-second PPE throughput stats workqueue
  */
-void nss_udp_st_ppe_throughput_timer_start(void)
+bool nss_udp_st_ppe_throughput_timer_start(void)
 {
 	if (ppe_stats_wq) {
 		pr_warn("UDP-ST PPE: stats timer already running\n");
-		return;
+		return true;
 	}
 
 	ppe_stats_wq = create_singlethread_workqueue("udpst_ppe_st");
 	if (!ppe_stats_wq) {
 		pr_err("UDP-ST PPE: failed to create stats workqueue\n");
-		return;
+		return false;
 	}
 
 	INIT_DELAYED_WORK(&ppe_stats_work, nss_udp_st_ppe_throughput_work_fn);
@@ -1416,6 +1604,7 @@ void nss_udp_st_ppe_throughput_timer_start(void)
 
 	pr_info("UDP-ST PPE: stats timer started (%dms interval)\n",
 		NSS_UDP_ST_PPE_POLL_MS);
+	return true;
 }
 
 /*
