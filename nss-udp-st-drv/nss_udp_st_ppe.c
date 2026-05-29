@@ -25,6 +25,10 @@
 #include <ppe_vp_public.h>
 #include <ppe_drv_policer.h>
 #include <ppe_drv_sc.h>
+#include <ppe_drv_port.h>
+#ifdef NSS_UDP_ST_PON
+#include <ppe_drv_veip.h>
+#endif
 #include "nss_udp_st_public.h"
 
 #define NSS_UDP_ST_PPE_POLICER_RULE_ID_BASE	1 /* Base user-level rule ID for UDP-ST ACL policers. */
@@ -332,10 +336,38 @@ void nss_udp_st_ppe_policer_detach(void)
 }
 
 /*
+ * nss_udp_st_ppe_is_gem_port()
+ *	Finding the real_dev is gem port or not
+ */
+bool nss_udp_st_ppe_is_gem_port(struct net_device *dev)
+{
+	struct ppe_drv_iface *port_iface;
+	ppe_drv_iface_t port_iface_idx;
+	uint16_t port_num;
+	bool is_gem_port = false;
+
+	/*
+	 * Check if the found port is a GEM port (SFU/HGU case)
+	 * If yes, we need to get the real device
+	 */
+	port_iface_idx = ppe_drv_iface_idx_get_by_dev(dev);
+	if (port_iface_idx >= 0) {
+		port_iface = ppe_drv_iface_get_by_idx(port_iface_idx);
+		if (port_iface) {
+			port_num = ppe_drv_iface_port_idx_get(port_iface);
+			if (ppe_drv_port_is_gem(port_num)) {
+				is_gem_port = true;
+			}
+		}
+	}
+
+	return is_gem_port;
+}
+
+/*
  * nss_udp_st_ppe_bridge_get_port()
  *	Resolve the physical bridge port for dest_mac by walking the bridge's
  *	bottom devices and querying the FDB.
- *	If the port is a VLAN device, extract the real device and VLAN ID.
  */
 static struct net_device *nss_udp_st_ppe_bridge_get_port(struct net_device *br_dev,
 							  const uint8_t *dest_mac,
@@ -344,6 +376,7 @@ static struct net_device *nss_udp_st_ppe_bridge_get_port(struct net_device *br_d
 	struct net_device *found_dev = NULL;
 	struct net_device *real_dev = NULL;
 	uint16_t vid = 0;
+	bool is_gem_port = false;
 
 	*vid_out = 0;
 
@@ -360,14 +393,11 @@ static struct net_device *nss_udp_st_ppe_bridge_get_port(struct net_device *br_d
 	pr_info("UDP-ST: %s: resolved bridge %s port -> %s for MAC %pM (fdb_vid=%u)\n",
 	       __func__, br_dev->name, found_dev->name, dest_mac, vid);
 
-	/*
-	 * If the port device is a VLAN device, extract the real physical device
-	 * and VLAN ID.
-	 */
 	if (is_vlan_dev(found_dev)) {
 		vid = vlan_dev_vlan_id(found_dev);
 		real_dev = vlan_dev_next_dev(found_dev);
-		if (real_dev) {
+		is_gem_port = nss_udp_st_ppe_is_gem_port(real_dev);
+		if (real_dev && is_gem_port) {
 			pr_info("UDP-ST: %s: port %s is VLAN device, real_dev=%s vid=%u\n",
 			       __func__, found_dev->name, real_dev->name, vid);
 			dev_hold(real_dev);
@@ -382,9 +412,6 @@ static struct net_device *nss_udp_st_ppe_bridge_get_port(struct net_device *br_d
 		}
 	}
 
-	/*
-	 * Not a VLAN device, return the port device as-is
-	 */
 	dev_hold(found_dev);
 	rcu_read_unlock();
 	return found_dev;
@@ -899,6 +926,16 @@ static int nss_udp_st_ppe_create_flow_v4(struct nss_udp_st_rules *rule, nss_udp_
 		create->top_rule.rx_if = vp_iface_idx;
 		create->top_rule.tx_if = wan_iface_idx;
 
+#ifdef NSS_UDP_ST_PON
+		/*
+		 * Check if VEIP is enabled and adjust interface assignments
+		 */
+		if (ppe_drv_veip_is_enabled(wan_dev)) {
+			create->top_rule.tx_if = phy_iface_idx;
+			create->conn_rule.tx_if = wan_iface_idx;
+		}
+#endif
+
 		/*
 		 * Bridge case
 		 */
@@ -1175,6 +1212,16 @@ static int nss_udp_st_ppe_create_flow_v6(struct nss_udp_st_rules *rule, nss_udp_
 
 		create->top_rule.rx_if = vp_iface_idx;
 		create->top_rule.tx_if = wan_iface_idx;
+
+#ifdef NSS_UDP_ST_PON
+		/*
+		 * Check if VEIP is enabled and adjust interface assignments
+		 */
+		if (ppe_drv_veip_is_enabled(wan_dev)) {
+			create->top_rule.tx_if = phy_iface_idx;
+			create->conn_rule.tx_if = wan_iface_idx;
+		}
+#endif
 
 		/*
 		 * Bridge case

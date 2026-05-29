@@ -37,6 +37,7 @@ void nss_udp_st_ppe_policer_detach(void);
 void nss_udp_st_ppe_policer_destroy(void);
 ppe_vp_num_t nss_udp_st_ppe_vp_num_get(void);
 struct net_device *nss_udp_st_ppe_vp_dev_get(void);
+bool nss_udp_st_ppe_is_gem_port(struct net_device *dev);
 
 int nss_udp_st_ppe_create_flows(nss_udp_st_ppe_dir_t dir);
 void nss_udp_st_destroy_ppe_flow(struct nss_udp_st_rules *rules);

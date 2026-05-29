@@ -22,6 +22,9 @@
 #ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
 #include <nss_dp_api_if.h>
 #endif
+#ifdef NSS_UDP_ST_PON
+#include <ppe_drv_veip.h>
+#endif
 #include "nss_udp_st_public.h"
 
 int tx_timer_flag[NR_CPUS];
@@ -1068,8 +1071,11 @@ static bool nss_udp_st_tx_hw_offload_send_packets(void)
 {
 	struct nss_udp_st_rules *pos = NULL;
 	struct nss_udp_st_rules *n = NULL;
+	struct net_device *real_dev __maybe_unused;
 	int total_count = 0;
 	int failed = 0;
+	bool is_veip __maybe_unused;
+	bool is_gem_port = false;;
 
 	/*
 	 * Count total rules for EDMA ring distribution
@@ -1085,6 +1091,14 @@ static bool nss_udp_st_tx_hw_offload_send_packets(void)
 
 	pr_info("UDP-ST: Injecting %d packets for hw_offload (one per rule)\n", total_count);
 
+#ifdef NSS_UDP_ST_PON
+	is_veip = ppe_drv_veip_is_enabled(nust_dev);
+	if (is_vlan_dev(nust_dev)) {
+		real_dev = vlan_dev_next_dev(nust_dev);
+		is_gem_port = nss_udp_st_ppe_is_gem_port(real_dev);
+	}
+#endif
+
 	/*
 	 * Inject one packet per rule
 	 */
@@ -1096,7 +1110,15 @@ static bool nss_udp_st_tx_hw_offload_send_packets(void)
 
 		nss_udp_st_tx_packets_ppe_vp(nust_dev, pos, &skb);
 		if (skb) {
-			if (nss_dp_udp_st_xmit(skb, slot, total_count, pos->vp_num) != 0) {
+			struct nss_dp_udp_st_xmit_info xmit_info = {
+				.skb = skb,
+				.skb_idx = slot,
+				.skb_count = total_count,
+				.vp_num = pos->vp_num,
+				.is_veip = is_veip,
+				.is_gem_port = is_gem_port,
+			};
+			if (nss_dp_udp_st_xmit(&xmit_info) != 0) {
 				pr_err("UDP-ST: Failed to xmit packet for rule (slot=%d)\n", slot);
 				kfree_skb(skb);
 				atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_PACKET_DROP]);
