@@ -611,8 +611,7 @@ static int nss_udp_st_pppoe_iface_config(struct net_device *dev)
 	memcpy(nust.pppoe_info.remote_mac, info.pa.remote, ETH_ALEN);
 
 fail:
-	if (ret)
-		dev_put(info.dev);
+	dev_put(info.dev);
 	ppp_release_channels(ppp_chan, 1);
 	return ret;
 }
@@ -1093,11 +1092,14 @@ static bool nss_udp_st_tx_hw_offload_send_packets(void)
 
 #ifdef NSS_UDP_ST_PON
 	is_veip = ppe_drv_veip_is_enabled(nust_dev);
+#endif
+#ifdef NSS_UDP_ST_SFU
 	if (is_vlan_dev(nust_dev)) {
 		real_dev = vlan_dev_next_dev(nust_dev);
 		is_gem_port = nss_udp_st_ppe_is_gem_port(real_dev);
 	}
 #endif
+
 
 	/*
 	 * Inject one packet per rule

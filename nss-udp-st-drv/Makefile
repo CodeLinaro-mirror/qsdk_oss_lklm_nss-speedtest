@@ -31,4 +31,8 @@ ccflags-y += -DNSS_UDP_ST_PON
 endif
 endif
 
+ifdef NSS_UDP_ST_DRV_SFU_PROFILE
+ccflags-y += -DNSS_UDP_ST_SFU
+endif
+
 ccflags-y += -Werror -Wall -I$(obj) -I$(obj)/exports

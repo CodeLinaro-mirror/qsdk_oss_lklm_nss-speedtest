@@ -113,11 +113,7 @@ static void nss_udp_st_clear_rules(void)
 	}
 	nust.rule_count = 0;
 
-	/*
-	 * Release the PPPoE underlying device reference taken.
-	 */
 	if (nust.pppoe_info.dev) {
-		dev_put(nust.pppoe_info.dev);
 		nust.pppoe_info.dev = NULL;
 	}
 }

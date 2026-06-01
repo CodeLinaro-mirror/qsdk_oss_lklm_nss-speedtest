@@ -396,7 +396,9 @@ static struct net_device *nss_udp_st_ppe_bridge_get_port(struct net_device *br_d
 	if (is_vlan_dev(found_dev)) {
 		vid = vlan_dev_vlan_id(found_dev);
 		real_dev = vlan_dev_next_dev(found_dev);
+#ifdef NSS_UDP_ST_SFU
 		is_gem_port = nss_udp_st_ppe_is_gem_port(real_dev);
+#endif
 		if (real_dev && is_gem_port) {
 			pr_info("UDP-ST: %s: port %s is VLAN device, real_dev=%s vid=%u\n",
 			       __func__, found_dev->name, real_dev->name, vid);
@@ -666,6 +668,7 @@ static int nss_udp_st_ppe_pppoe_channel_get(struct net_device *dev)
 	pr_info("UDP-ST: PPPoE channel extracted - dev: %s, sid: 0x%x, remote_mac: %pM\n",
 		pppoe_info.dev->name, pppoe_info.pa.sid, pppoe_info.pa.remote);
 
+	dev_put(pppoe_info.dev);
 	ppp_release_channels(ppp_chan, 1);
 	return 0;
 }
@@ -722,8 +725,13 @@ static int nss_udp_st_ppe_fill_pppoe_rule(struct net_device *wan_dev,
 		return -EINVAL;
 	}
 
-	pppoe_rule->return_session.session_id = nust.pppoe_info.pppoe_session_id;
-	memcpy(pppoe_rule->return_session.server_mac, nust.pppoe_info.remote_mac, ETH_ALEN);
+	if (dir == NSS_UDP_ST_PPE_TX_DIR) {
+		pppoe_rule->return_session.session_id = nust.pppoe_info.pppoe_session_id;
+		memcpy(pppoe_rule->return_session.server_mac, nust.pppoe_info.remote_mac, ETH_ALEN);
+	} else {
+		pppoe_rule->flow_session.session_id = nust.pppoe_info.pppoe_session_id;
+		memcpy(pppoe_rule->flow_session.server_mac, nust.pppoe_info.remote_mac, ETH_ALEN);
+	}
 	*valid_flags |= pppoe_valid_flag;
 
 	if (has_vlan) {
@@ -881,27 +889,26 @@ static int nss_udp_st_ppe_create_flow_v4(struct nss_udp_st_rules *rule, nss_udp_
 		return -EINVAL;
 	}
 
-	/*
-	 * Detect PPPoE on WAN interface
-	 */
-	ret = nss_udp_st_ppe_fill_pppoe_rule(wan_dev, &create->pppoe_rule,
-					     &create->vlan_rule,
-					     &create->valid_flags,
-					     PPE_DRV_V4_VALID_FLAG_RETURN_PPPOE,
-					     PPE_DRV_V4_VALID_FLAG_VLAN,
-					     dir, wan_iface_idx,
-					     &phy_iface_idx);
-	if (ret < 0) {
-		pr_err("UDP-ST: PPPoE rule fill failed for WAN dev: %s\n",
-		       wan_dev->name);
-		kfree(create);
-		if (port_dev)
-			dev_put(port_dev);
-		dev_put(wan_dev);
-		return -EINVAL;
-	}
-
 	if (dir == NSS_UDP_ST_PPE_TX_DIR) {
+		/*
+		 * Detect PPPoE on WAN interface
+		 */
+		ret = nss_udp_st_ppe_fill_pppoe_rule(wan_dev, &create->pppoe_rule,
+							&create->vlan_rule,
+							&create->valid_flags,
+							PPE_DRV_V4_VALID_FLAG_RETURN_PPPOE,
+							PPE_DRV_V4_VALID_FLAG_VLAN,
+							dir, wan_iface_idx,
+							&phy_iface_idx);
+		if (ret < 0) {
+			pr_err("UDP-ST: PPPoE rule fill failed for WAN dev: %s\n",
+				wan_dev->name);
+			kfree(create);
+			if (port_dev)
+				dev_put(port_dev);
+			dev_put(wan_dev);
+			return -EINVAL;
+		}
 		/*
 		 * Fill 5-tuple information from UDP-ST rule.
 		 */
@@ -956,6 +963,26 @@ static int nss_udp_st_ppe_create_flow_v4(struct nss_udp_st_rules *rule, nss_udp_
 			create->qos_rule.return_qos_tag = nust.config.dscp >> 2;
 		}
 	} else {
+		/*
+		 * Detect PPPoE on WAN interface
+		 */
+		ret = nss_udp_st_ppe_fill_pppoe_rule(wan_dev, &create->pppoe_rule,
+							&create->vlan_rule,
+							&create->valid_flags,
+							PPE_DRV_V4_VALID_FLAG_FLOW_PPPOE,
+							PPE_DRV_V4_VALID_FLAG_VLAN,
+							dir, wan_iface_idx,
+							&phy_iface_idx);
+		if (ret < 0) {
+			pr_err("UDP-ST: PPPoE rule fill failed for WAN dev: %s\n",
+				wan_dev->name);
+			kfree(create);
+			if (port_dev)
+				dev_put(port_dev);
+			dev_put(wan_dev);
+			return -EINVAL;
+		}
+
 		/*
 		 * Fill 5-tuple information from UDP-ST rule.
 		 */
@@ -1376,6 +1403,7 @@ int nss_udp_st_ppe_create_flows(nss_udp_st_ppe_dir_t dir)
 	}
 
 	pr_info("UDP-ST: PPE flow creation complete: %d succeeded\n", count);
+
 	return 0;
 }
 
