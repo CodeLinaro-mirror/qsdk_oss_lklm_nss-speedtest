@@ -33,7 +33,7 @@ struct nss_udp_st nust;
 bool is_dummy_vp_exists = false;
 struct delayed_work nss_udp_st_tx_delayed_work;
 struct workqueue_struct *work_queue;
-void nss_udp_st_update_stats(size_t pkt_size, uint64_t num_pkts);
+void nss_udp_st_update_stats(size_t pkt_size, int64_t num_pkts);
 uint64_t nss_udp_st_tx_num_pkt;
 struct net_device *nust_dev;
 struct nss_udp_st_rules *exception_dport_rules;
@@ -662,7 +662,7 @@ static void __exit nss_udp_st_exit(void)
  *  update packet and time stats for tx/rx
  *  num_pkts: number of packets to add (1 for software path, >1 for PPE batch)
  */
-void nss_udp_st_update_stats(size_t pkt_size, uint64_t num_pkts)
+void nss_udp_st_update_stats(size_t pkt_size, int64_t num_pkts)
 {
 	long time_curr;
 	long time_start;

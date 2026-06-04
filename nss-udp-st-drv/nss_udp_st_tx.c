@@ -22,7 +22,7 @@
 #ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
 #include <nss_dp_api_if.h>
 #endif
-#ifdef NSS_UDP_ST_PON
+#ifdef NSS_UDP_ST_HGU
 #include <ppe_drv_veip.h>
 #endif
 #include "nss_udp_st_public.h"
@@ -1114,16 +1114,15 @@ static bool nss_udp_st_tx_hw_offload_send_packets(void)
 
 	pr_info("UDP-ST: Injecting %d packets for hw_offload (one per rule)\n", total_count);
 
-#ifdef NSS_UDP_ST_PON
+#ifdef NSS_UDP_ST_HGU
 	is_veip = ppe_drv_veip_is_enabled(nust_dev);
 #endif
-#ifdef NSS_UDP_ST_SFU
+#ifdef NSS_UDP_ST_PON
 	if (is_vlan_dev(nust_dev)) {
 		real_dev = vlan_dev_next_dev(nust_dev);
 		is_gem_port = nss_udp_st_ppe_is_gem_port(real_dev);
 	}
 #endif
-
 
 	/*
 	 * Inject one packet per rule

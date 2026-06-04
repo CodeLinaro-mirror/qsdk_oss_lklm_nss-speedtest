@@ -26,13 +26,10 @@ KBUILD_EXTRA_SYMBOLS += $(NSS_DP_SYMVERS)
 endif
 
 ifeq ($(SoC),$(filter $(SoC),ipq52xx))
-ifndef NSS_UDP_ST_DRV_SFU_PROFILE
 ccflags-y += -DNSS_UDP_ST_PON
+ifndef NSS_UDP_ST_DRV_SFU_PROFILE
+ccflags-y += -DNSS_UDP_ST_HGU
 endif
-endif
-
-ifdef NSS_UDP_ST_DRV_SFU_PROFILE
-ccflags-y += -DNSS_UDP_ST_SFU
 endif
 
 ccflags-y += -Werror -Wall -I$(obj) -I$(obj)/exports
