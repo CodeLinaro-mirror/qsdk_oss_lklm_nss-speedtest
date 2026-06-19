@@ -393,9 +393,14 @@ static struct net_device *nss_udp_st_ppe_bridge_get_port(struct net_device *br_d
 	pr_info("UDP-ST: %s: resolved bridge %s port -> %s for MAC %pM (fdb_vid=%u)\n",
 	       __func__, br_dev->name, found_dev->name, dest_mac, vid);
 
+	/*
+	 * Check if this is a SFU case
+	 * In SFU, underlying device will be a vlan device and PPE rule will be with
+	 * the real dev.
+	 */
 	if (is_vlan_dev(found_dev)) {
 		vid = vlan_dev_vlan_id(found_dev);
-		real_dev = vlan_dev_next_dev(found_dev);
+		real_dev = vlan_dev_real_dev(found_dev);
 #ifdef NSS_UDP_ST_PON
 		is_gem_port = nss_udp_st_ppe_is_gem_port(real_dev);
 #endif

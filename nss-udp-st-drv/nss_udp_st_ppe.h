@@ -8,6 +8,8 @@
 
 #include <ppe_vp_public.h>
 
+struct ppe_drv_policer_acl;
+
 /*
  * nss_udp_st_ppe_dir
  *	enum to check tx/rx direction
@@ -18,12 +20,10 @@ typedef enum nss_udp_st_ppe_dir {
 } nss_udp_st_ppe_dir_t;
 
 /*
- * nss_udp_st_ppe_vp_ctx
- *	PPE VP context for UDP-ST speedtest.
+ * nss_udp_st_ppe_ctx
+ *	PPE context for UDP speedtest hardware offload.
  */
-struct ppe_drv_policer_acl;
-
-typedef struct nss_udp_st_ppe_vp_ctx {
+typedef struct nss_udp_st_ppe_ctx {
 	struct net_device *vp_dev;		/* VP netdev */
 	ppe_vp_num_t vp_num;			/* VP number */
 	struct ppe_drv_policer_acl *policer_acl_ctx;	/* ACL policer context */

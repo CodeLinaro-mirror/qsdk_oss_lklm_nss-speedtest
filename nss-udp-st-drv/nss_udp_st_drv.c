@@ -393,6 +393,7 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 			 */
 			if (!nss_udp_st_ppe_throughput_timer_start()) {
 				nust.mode = NSS_UDP_ST_STOP;
+				nss_udp_st_clear_rules();
 				pr_err("Unable to start throughput timer\n");
 				return -EINVAL;
 			}
@@ -402,6 +403,7 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 			 */
 			if (!nss_udp_st_tx_hw_offload()) {
 				nust.mode = NSS_UDP_ST_STOP;
+				nss_udp_st_clear_rules();
 				nss_udp_st_ppe_throughput_timer_stop();
 				pr_err("Unable to start HW offload Tx test\n");
 				return -EINVAL;
@@ -446,8 +448,9 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 			}
 
 			if (!nss_udp_st_ppe_throughput_timer_start()) {
+				nss_udp_st_clear_rules();
 				pr_err("UDP-ST: PPE throughput timer start failed\n");
-                                return -EINVAL;
+				return -EINVAL;
 			}
 		}
 #endif
@@ -651,6 +654,11 @@ static void __exit nss_udp_st_exit(void)
 #else
 	nss_udp_st_clear_rules();
 #endif
+
+	if (is_dummy_vp_exists) {
+		nss_udp_st_rx_free_dummy_vp(nust.dummy_vp_num);
+		is_dummy_vp_exists = false;
+	}
 
 	device_destroy(dump_class, MKDEV(dump_major, 0));
 	class_destroy(dump_class);
