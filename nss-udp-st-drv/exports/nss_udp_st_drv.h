@@ -46,7 +46,7 @@
 extern struct nss_udp_st nust;
 extern struct delayed_work nss_udp_st_tx_delayed_work;
 extern struct workqueue_struct *work_queue;
-extern void nss_udp_st_update_stats(size_t pkt_size, uint64_t num_pkts);
+extern void nss_udp_st_update_stats(size_t pkt_size, int64_t num_pkts);
 extern uint64_t nss_udp_st_tx_num_pkt;
 extern struct net_device *nust_dev;
 extern struct nss_udp_st_rules *exception_dport_rules;

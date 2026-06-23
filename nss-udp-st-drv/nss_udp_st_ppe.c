@@ -26,7 +26,7 @@
 #include <ppe_drv_policer.h>
 #include <ppe_drv_sc.h>
 #include <ppe_drv_port.h>
-#ifdef NSS_UDP_ST_PON
+#ifdef NSS_UDP_ST_HGU
 #include <ppe_drv_veip.h>
 #endif
 #include "nss_udp_st_public.h"
@@ -35,7 +35,7 @@
 #define NSS_UDP_ST_PPE_VLAN_NOT_CONFIGURED	0xFFF
 #define NSS_UDP_ST_PPE_DEFAULT_CBS		8000	/* Committed burst size in bytes */
 #define NSS_UDP_ST_PPE_DEFAULT_EBS		9000	/* Excess burst size in bytes */
-#define NSS_UDP_ST_PPE_POLL_MS			1000	/* PPE stats poll interval in milliseconds */
+#define NSS_UDP_ST_PPE_POLL_MS			50	/* PPE stats poll interval in milliseconds */
 
 static struct delayed_work ppe_stats_work;
 static struct workqueue_struct *ppe_stats_wq;
@@ -396,7 +396,7 @@ static struct net_device *nss_udp_st_ppe_bridge_get_port(struct net_device *br_d
 	if (is_vlan_dev(found_dev)) {
 		vid = vlan_dev_vlan_id(found_dev);
 		real_dev = vlan_dev_next_dev(found_dev);
-#ifdef NSS_UDP_ST_SFU
+#ifdef NSS_UDP_ST_PON
 		is_gem_port = nss_udp_st_ppe_is_gem_port(real_dev);
 #endif
 		if (real_dev && is_gem_port) {
@@ -813,6 +813,7 @@ static int nss_udp_st_ppe_create_flow_v4(struct nss_udp_st_rules *rule, nss_udp_
 	port_dev = NULL;
 	rule->bridge_vlan_id = 0;
 	br_dev = wan_dev;
+
 	if (netif_is_bridge_master(br_dev)) {
 		uint16_t bridge_vid = 0;
 		port_dev = nss_udp_st_ppe_bridge_get_port(br_dev, dest_mac, &bridge_vid);
@@ -822,6 +823,7 @@ static int nss_udp_st_ppe_create_flow_v4(struct nss_udp_st_rules *rule, nss_udp_
 			dev_put(wan_dev);
 			return -EINVAL;
 		}
+
 		port_iface_idx = ppe_drv_iface_idx_get_by_dev(port_dev);
 		if (port_iface_idx < 0) {
 			pr_err("UDP-ST: failed to get PPE iface for bridge port %s\n",
@@ -830,6 +832,7 @@ static int nss_udp_st_ppe_create_flow_v4(struct nss_udp_st_rules *rule, nss_udp_
 			dev_put(wan_dev);
 			return -EINVAL;
 		}
+
 		/*
 		 * Store the bridge VLAN ID in the rule for use in TX path
 		 */
@@ -933,7 +936,7 @@ static int nss_udp_st_ppe_create_flow_v4(struct nss_udp_st_rules *rule, nss_udp_
 		create->top_rule.rx_if = vp_iface_idx;
 		create->top_rule.tx_if = wan_iface_idx;
 
-#ifdef NSS_UDP_ST_PON
+#ifdef NSS_UDP_ST_HGU
 		/*
 		 * Check if VEIP is enabled and adjust interface assignments
 		 */
@@ -1128,6 +1131,7 @@ static int nss_udp_st_ppe_create_flow_v6(struct nss_udp_st_rules *rule, nss_udp_
 	port_iface_idx = -1;
 	port_dev = NULL;
 	rule->bridge_vlan_id = 0;
+
 	if (netif_is_bridge_master(wan_dev)) {
 		uint16_t bridge_vid = 0;
 		port_dev = nss_udp_st_ppe_bridge_get_port(wan_dev, dest_mac, &bridge_vid);
@@ -1137,6 +1141,7 @@ static int nss_udp_st_ppe_create_flow_v6(struct nss_udp_st_rules *rule, nss_udp_
 			dev_put(wan_dev);
 			return -EINVAL;
 		}
+
 		port_iface_idx = ppe_drv_iface_idx_get_by_dev(port_dev);
 		if (port_iface_idx < 0) {
 			pr_err("UDP-ST: failed to get PPE iface for bridge port %s (v6)\n",
@@ -1145,6 +1150,7 @@ static int nss_udp_st_ppe_create_flow_v6(struct nss_udp_st_rules *rule, nss_udp_
 			dev_put(wan_dev);
 			return -EINVAL;
 		}
+
 		/*
 		 * Store the bridge VLAN ID in the rule for use in TX path
 		 */
@@ -1240,7 +1246,7 @@ static int nss_udp_st_ppe_create_flow_v6(struct nss_udp_st_rules *rule, nss_udp_
 		create->top_rule.rx_if = vp_iface_idx;
 		create->top_rule.tx_if = wan_iface_idx;
 
-#ifdef NSS_UDP_ST_PON
+#ifdef NSS_UDP_ST_HGU
 		/*
 		 * Check if VEIP is enabled and adjust interface assignments
 		 */
@@ -1470,8 +1476,7 @@ void nss_udp_st_destroy_ppe_flow(struct nss_udp_st_rules *rules)
  *	For RX the PPE flow tuple is reversed (dip/dport as flow, sip/sport as return).
  */
 static int nss_udp_st_ppe_query_flow_stats_v4(struct nss_udp_st_rules *rule,
-					       uint64_t *delta_bytes,
-					       uint64_t *delta_pkts,
+					       int64_t *delta_pkts,
 					       nss_udp_st_ppe_dir_t dir)
 {
 	struct ppe_drv_v4_flow_conn_stats conn_stats;
@@ -1502,7 +1507,6 @@ static int nss_udp_st_ppe_query_flow_stats_v4(struct nss_udp_st_rules *rule,
 		return -EINVAL;
 	}
 
-	*delta_bytes = conn_stats.conn_sync.flow_rx_byte_count;
 	*delta_pkts = conn_stats.conn_sync.flow_rx_packet_count;
 	return 0;
 }
@@ -1513,7 +1517,6 @@ static int nss_udp_st_ppe_query_flow_stats_v4(struct nss_udp_st_rules *rule,
  *	For RX the PPE flow tuple is reversed (dip/dport as flow, sip/sport as return).
  */
 static int nss_udp_st_ppe_query_flow_stats_v6(struct nss_udp_st_rules *rule,
-					       uint64_t *delta_bytes,
 					       uint64_t *delta_pkts,
 					       nss_udp_st_ppe_dir_t dir)
 {
@@ -1541,7 +1544,6 @@ static int nss_udp_st_ppe_query_flow_stats_v6(struct nss_udp_st_rules *rule,
 		return -EINVAL;
 	}
 
-	*delta_bytes = conn_stats.conn_sync.flow_rx_byte_count;
 	*delta_pkts = conn_stats.conn_sync.flow_rx_packet_count;
 	return 0;
 }
@@ -1554,10 +1556,9 @@ static void nss_udp_st_ppe_throughput_work_fn(struct work_struct *work)
 {
 	struct nss_udp_st_rules *pos, *n;
 	struct ppe_drv_policer_hw_stats pol_stats = {};
-	uint64_t total_delta_bytes = 0;
-	uint64_t total_delta_pkts = 0;
-	uint64_t drop_delta_pkts = 0;
-	uint64_t delta_bytes, delta_pkts;
+	int64_t total_delta_pkts = 0;
+	int64_t drop_delta_pkts = 0;
+	int64_t delta_pkts = 0;
 	nss_udp_st_ppe_dir_t ppe_dir = (nust.dir == NSS_UDP_ST_TX) ?
 					NSS_UDP_ST_PPE_TX_DIR : NSS_UDP_ST_PPE_RX_DIR;
 
@@ -1570,27 +1571,6 @@ static void nss_udp_st_ppe_throughput_work_fn(struct work_struct *work)
 	 * ppe_drv_v4/v6_get_conn_stats returns delta (clears on read).
 	 */
 	list_for_each_entry_safe(pos, n, &nust.rules.list, list) {
-		delta_bytes = 0;
-		delta_pkts = 0;
-
-		if (pos->ip_version & NSS_UDP_ST_FLAG_IPV4) {
-			if (nss_udp_st_ppe_query_flow_stats_v4(pos,
-							       &delta_bytes,
-							       &delta_pkts,
-							       ppe_dir) == 0) {
-				total_delta_bytes += delta_bytes;
-				total_delta_pkts  += delta_pkts;
-			}
-		} else if (pos->ip_version & NSS_UDP_ST_FLAG_IPV6) {
-			if (nss_udp_st_ppe_query_flow_stats_v6(pos,
-							       &delta_bytes,
-							       &delta_pkts,
-							       ppe_dir) == 0) {
-				total_delta_bytes += delta_bytes;
-				total_delta_pkts  += delta_pkts;
-			}
-		}
-
 		/*
 		 * TX only: accumulate policer-dropped packet count so we can
 		 * subtract them from total_delta_pkts below.
@@ -1605,16 +1585,30 @@ static void nss_udp_st_ppe_throughput_work_fn(struct work_struct *work)
 			drop_delta_pkts += pol_stats.hw_cntrs.rpc - pos->policer_prev_rpc;
 			pos->policer_prev_rpc = pol_stats.hw_cntrs.rpc;
 		}
+
+		if (pos->ip_version & NSS_UDP_ST_FLAG_IPV4) {
+			if (nss_udp_st_ppe_query_flow_stats_v4(pos,
+							       &delta_pkts,
+							       ppe_dir) == 0) {
+				total_delta_pkts += delta_pkts;
+			}
+		} else if (pos->ip_version & NSS_UDP_ST_FLAG_IPV6) {
+			if (nss_udp_st_ppe_query_flow_stats_v6(pos,
+							       &delta_pkts,
+							       ppe_dir) == 0) {
+				total_delta_pkts += delta_pkts;
+			}
+		}
+
 	}
 
 	/*
 	 * For TX, total_delta_pkts includes packets seen at VP ingress before
-	 * the policer drops them.  Subtract policer drops to get only the
+	 * the policer drops them. Subtract policer drops to get only the
 	 * packets that made it to the wire.
 	 * For RX there is no policer so drop_delta_pkts is always 0.
 	 */
-	if (drop_delta_pkts > 0 && drop_delta_pkts < total_delta_pkts)
-		total_delta_pkts -= drop_delta_pkts;
+	total_delta_pkts -= drop_delta_pkts;
 
 	if (total_delta_pkts > 0) {
 		nss_udp_st_update_stats(
@@ -1673,6 +1667,13 @@ bool nss_udp_st_ppe_throughput_timer_start(void)
 	 * delta starts from the correct baseline (no stale hardware counts).
 	 */
 	nss_udp_st_ppe_reset_policer_stats();
+
+	/*
+	 * Start the stats update with 1 packet so that there is lesser
+	 */
+	if (nust.dir == NSS_UDP_ST_TX) {
+		nss_udp_st_update_stats(nust.config.buffer_sz + sizeof(struct ethhdr), 1);
+	}
 
 	queue_delayed_work(ppe_stats_wq, &ppe_stats_work,
 			   msecs_to_jiffies(NSS_UDP_ST_PPE_POLL_MS));
