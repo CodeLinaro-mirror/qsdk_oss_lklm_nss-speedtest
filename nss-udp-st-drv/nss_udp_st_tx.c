@@ -296,8 +296,21 @@ static void nss_udp_st_tx_packets_ppe_vp(struct net_device *ndev, struct nss_udp
 		return;
 	}
 
-	align_offset = PTR_ALIGN(skb->data, SMP_CACHE_BYTES) - skb->data;
-	skb_reserve(skb, NSS_UDP_ST_MAX_HEADROOM + align_offset + sizeof(uint16_t));
+	align_offset = PTR_ALIGN(skb->data, NSS_UDP_ST_HW_OFFLOAD_PTR_ALIGN) - skb->data;
+
+	if (rules->ip_version & NSS_UDP_ST_FLAG_IPV4) {
+		if (rules->bridge_vlan_id) {
+			skb_reserve(skb, sizeof(*uh) + sizeof(*iph) + ETH_HLEN + VLAN_HLEN + align_offset);
+		} else {
+			skb_reserve(skb, sizeof(*uh) + sizeof(*iph) + ETH_HLEN + align_offset);
+		}
+	} else {
+		if (rules->bridge_vlan_id) {
+			skb_reserve(skb, sizeof(*uh) + sizeof(*ipv6h) + ETH_HLEN + VLAN_HLEN + align_offset);
+		} else {
+			skb_reserve(skb, sizeof(*uh) + sizeof(*ipv6h) + ETH_HLEN + align_offset);
+		}
+	}
 
 	data = skb_put(skb, udp_len - sizeof(*uh));
 	memset(data, 0, udp_len - sizeof(*uh));
@@ -326,7 +339,6 @@ static void nss_udp_st_tx_packets_ppe_vp(struct net_device *ndev, struct nss_udp
 	 */
 	if (rules->bridge_vlan_id) {
 		struct vlan_hdr *vhdr;
-
 		skb_push(skb, VLAN_HLEN);
 		vhdr = (struct vlan_hdr *)skb->data;
 		vhdr->h_vlan_TCI = htons(rules->bridge_vlan_id);

@@ -13,6 +13,7 @@
 #define NSS_UDP_ST_MIN_TAILROOM 32		/* Min tailroom needed */
 #define NSS_UDP_ST_PROCESS_NAME_SZ 8		/* Size of buffer used to store process name */
 #define NSS_UDP_ST_TUNNEL_ID_CONSTANT 64	/* Constant used to generate tunnel id */
+#define NSS_UDP_ST_HW_OFFLOAD_PTR_ALIGN 0x20    /* Aligning skb to 32 bit for Hardware offload */
 
 #ifdef NSS_UDP_ST_DRV_VP_ENABLE
 void nss_udp_st_tun_destroy(struct net_device *dev);
