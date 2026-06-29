@@ -33,8 +33,8 @@
 
 #define NSS_UDP_ST_PPE_POLICER_RULE_ID_BASE	1 /* Base user-level rule ID for UDP-ST ACL policers. */
 #define NSS_UDP_ST_PPE_VLAN_NOT_CONFIGURED	0xFFF
-#define NSS_UDP_ST_PPE_DEFAULT_CBS		8000	/* Committed burst size in bytes */
-#define NSS_UDP_ST_PPE_DEFAULT_EBS		9000	/* Excess burst size in bytes */
+#define NSS_UDP_ST_PPE_DEFAULT_CBS		32768	/* Committed burst size in bytes */
+#define NSS_UDP_ST_PPE_DEFAULT_EBS		32768	/* Excess burst size in bytes */
 #define NSS_UDP_ST_PPE_POLL_MS			50	/* PPE stats poll interval in milliseconds */
 
 static struct delayed_work ppe_stats_work;
@@ -164,7 +164,7 @@ static struct ppe_drv_policer_acl *nss_udp_st_ppe_policer_create_per_flow(uint32
 	struct ppe_drv_policer_rule_create create = {0};
 	struct ppe_drv_policer_rule_create_acl_info *ai = &create.msg.acl_info;
 	struct ppe_drv_policer_acl *policer_ctx;
-	uint64_t committed_rate;
+	uint64_t committed_rate = 0;
 	uint32_t rule_id;
 
 	/*
@@ -172,9 +172,8 @@ static struct ppe_drv_policer_acl *nss_udp_st_ppe_policer_create_per_flow(uint32
 	 */
 	rule_id = g_policer_rule_id_counter++;
 
-	committed_rate = (rate_mbps * 1000000);
+	committed_rate = ((uint64_t)rate_mbps * 1000000ULL);
 	committed_rate = (committed_rate / 8);	/* Mbps -> bytes/sec */
-
 	/*
 	 * Activate metering
 	 */
@@ -189,6 +188,7 @@ static struct ppe_drv_policer_acl *nss_udp_st_ppe_policer_create_per_flow(uint32
 	ai->cbs = NSS_UDP_ST_PPE_DEFAULT_CBS;
 	ai->eir = committed_rate;
 	ai->ebs = NSS_UDP_ST_PPE_DEFAULT_EBS;
+
 	/*
 	 * Drop the red traffic
 	 */
