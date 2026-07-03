@@ -24,6 +24,7 @@
 #include <getopt.h>
 #include <stdbool.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <curl/curl.h>
 #include <inttypes.h>
 #include <ifaddrs.h>
@@ -107,7 +108,7 @@ static void nss_tcp_st_cli_usage(void)
 	nss_tcp_st_log_info("\nStart TCP Speed Test\n");
 	nss_tcp_st_log_info("\tnss-tcp-st [-m | --mode] start [options]\n");
 	nss_tcp_st_log_info("\nOptions:\n");
-	nss_tcp_st_log_info("-i, --server_ip\t\t< IPv4/v6 address of the server >\n");
+	nss_tcp_st_log_info("-i, --server_ip\t\t< IPv4/v6 address or domain name of the server >\n");
 	nss_tcp_st_log_info("-b, --bind\t\t< Source/WAN IPv4/IPv6 address to bind socket >\n");
 	nss_tcp_st_log_info("-p, --port\t\t< Port number of the server >\n");
 	nss_tcp_st_log_info("-l, --buffer_len\t< Socket buffer length for test >\n");
@@ -288,19 +289,57 @@ fail:
 	return -ENODEV;
 }
 
+static bool nss_tcp_st_cli_resolve_name(const char *name, struct netfn_tcpst_cfg *st_cfg)
+{
+	struct addrinfo hints = {0}, *res_ai = NULL;
+	int rc;
+
+	hints.ai_family   = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+
+	rc = getaddrinfo(name, NULL, &hints, &res_ai);
+	if (rc != 0) {
+		nss_tcp_st_log_error("DNS resolution failed for '%s': %s\n", name, gai_strerror(rc));
+		return false;
+	}
+
+	/*
+	 * ai_addr is typed as struct sockaddr * by POSIX getaddrinfo().
+	 * The cast to struct sockaddr_in * is safe here because it is
+	 * guarded by the ai_family == AF_INET check below.
+	 */
+	if (res_ai->ai_family == AF_INET) {
+		struct sockaddr_in *sin = (struct sockaddr_in *)res_ai->ai_addr;
+		st_cfg->remote.ip.v4 = sin->sin_addr;
+		st_cfg->remote.ip_version = 4;
+	} else if (res_ai->ai_family == AF_INET6) {
+		struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)res_ai->ai_addr;
+		st_cfg->remote.ip.v6 = sin6->sin6_addr;
+		st_cfg->remote.ip_version = 6;
+	} else {
+		nss_tcp_st_log_error("Unsupported address family %d for '%s'\n",
+				res_ai->ai_family, name);
+		freeaddrinfo(res_ai);
+		return false;
+	}
+
+	freeaddrinfo(res_ai);
+	return true;
+}
+
 /*
  * nss_tcp_st_cli_start()
  *	Parse command line arguments for TCPST and start the test
  */
 static bool nss_tcp_st_cli_start(int args, char **argv)
 {
-	char content_type[NSS_TCPST_CLI_CFG_MAX_LEN];
+	char content_type[NSS_TCPST_CLI_CFG_MAX_LEN] = {0};
 	char start_shortopt[NSS_TCPST_CLI_MAX_OPT];
-	char user_agent[NSS_TCPST_CLI_CFG_MAX_LEN];
-	char file_name[NSS_TCPST_CLI_CFG_MAX_LEN];
+	char user_agent[NSS_TCPST_CLI_CFG_MAX_LEN] = {0};
+	char file_name[NSS_TCPST_CLI_CFG_MAX_LEN] = {0};
 	int option_index = 0, error, opt = 0;
 	struct netfn_tcpst_cfg st_cfg;
-	char ip[INET6_ADDRSTRLEN];
+	char *host = NULL, ip[INET6_ADDRSTRLEN + 2];
 	bool time_based = false;
 	uint64_t file_size = 0;
 	bool http = false;
@@ -330,14 +369,29 @@ static bool nss_tcp_st_cli_start(int args, char **argv)
 			if (inet_pton(AF_INET, optarg, &st_cfg.remote.ip.v4)) {
 				st_cfg.remote.ip_version = 4;
 				snprintf(ip, INET_ADDRSTRLEN, "%s", optarg);
+				host = ip;
 			} else if (inet_pton(AF_INET6, optarg, &st_cfg.remote.ip.v6)) {
 				st_cfg.remote.ip_version = 6;
 				/*
 				 * HTTP requires IPv6 address to be enclosed in [ ]
 				 */
 				snprintf(ip, INET6_ADDRSTRLEN + 2, "[%s]", optarg);
+				host = ip;
+			} else if (nss_tcp_st_cli_resolve_name(optarg, &st_cfg)) {
+				/*
+				 * Use the domain name directly as the HTTP Host value.
+				 * For IPv6 resolved addresses, bracket the address in ip[].
+				 */
+				if (st_cfg.remote.ip_version == 6) {
+					char addr_str[INET6_ADDRSTRLEN];
+					inet_ntop(AF_INET6, &st_cfg.remote.ip.v6, addr_str, sizeof(addr_str));
+					snprintf(ip, sizeof(ip), "[%s]", addr_str);
+					host = ip;
+				} else {
+					host = optarg;
+				}
 			} else {
-				nss_tcp_st_log_error("%px:Invalid server IP Address %s\n", argv, ip);
+				nss_tcp_st_log_error("%px:Invalid server IP Address or domain name %s\n", argv, optarg);
 				return false;
 			}
 
@@ -350,12 +404,6 @@ static bool nss_tcp_st_cli_start(int args, char **argv)
 				st_cfg.local.ip_version = 6;
 			} else {
 				nss_tcp_st_log_error("%px:Invalid source IP Address %s\n", argv, optarg);
-				return false;
-			}
-
-			error = nss_tcp_st_cli_get_src_dev(&st_cfg);
-			if (error) {
-				nss_tcp_st_log_info("%px:Failed to resolve Source device from SIP, binding disabled\n", argv);
 				return false;
 			}
 
@@ -461,10 +509,23 @@ static bool nss_tcp_st_cli_start(int args, char **argv)
 		return false;
 	}
 
+	if (st_cfg.local.ip_version) {
+		error = nss_tcp_st_cli_get_src_dev(&st_cfg);
+		if (error) {
+			nss_tcp_st_log_info("%px:Failed to resolve Source device from SIP, binding disabled\n", argv);
+			return false;
+		}
+	}
+
 	if (http) {
 		st_cfg.http.file_sz = file_size;
 
-		if (nss_tcp_st_cli_set_http_header(&st_cfg, ip, file_name, user_agent, content_type)) {
+		if (!host) {
+			nss_tcp_st_log_error("%px:Server IP/hostname not specified\n", argv);
+			return false;
+		}
+
+		if (nss_tcp_st_cli_set_http_header(&st_cfg, host, file_name, user_agent, content_type)) {
 			nss_tcp_st_log_error("%px:Failed to parse http header\n", argv);
 			return false;
 		}
