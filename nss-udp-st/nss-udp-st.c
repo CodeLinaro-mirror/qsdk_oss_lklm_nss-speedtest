@@ -368,6 +368,10 @@ static int nss_udp_st_stats(void)
 		return -EINVAL;
 	}
 
+	if (st_stat.ppe_stats.ppe_sample_count) {
+		bytes = st_stat.ppe_stats.ppe_bytes;
+	}
+
 	fprintf(fp, "\nTime Stats\n");
 	fprintf(fp, "\tstart time = %lld ms\n",st_stat.timer_stats[NSS_UDP_ST_STATS_TIME_START]);
 	fprintf(fp, "\tcapture time = %lld ms\n",

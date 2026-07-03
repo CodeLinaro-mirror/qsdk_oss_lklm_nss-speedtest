@@ -17,6 +17,7 @@
 #include <net/route.h>
 #include <net/ip6_route.h>
 #include <linux/if_pppox.h>
+#include <linux/hrtimer.h>
 
 #include <ppe_drv.h>
 #include <ppe_drv_v4.h>
@@ -36,9 +37,12 @@
 #define NSS_UDP_ST_PPE_DEFAULT_CBS		32768	/* Committed burst size in bytes */
 #define NSS_UDP_ST_PPE_DEFAULT_EBS		32768	/* Excess burst size in bytes */
 #define NSS_UDP_ST_PPE_POLL_MS			50	/* PPE stats poll interval in milliseconds */
+#define NSS_UDP_ST_PPE_HRTIMER_NS		1ULL
 
 static struct delayed_work ppe_stats_work;
 static struct workqueue_struct *ppe_stats_wq;
+static struct hrtimer ppe_hrtimer;
+static bool ppe_hrtimer_active;
 static uint32_t g_policer_rule_id_counter = NSS_UDP_ST_PPE_POLICER_RULE_ID_BASE;
 
 static nss_udp_st_ppe_ctx_t g_udp_st_ppe_ctx = {
@@ -1079,6 +1083,9 @@ static int nss_udp_st_ppe_create_flow_v4(struct nss_udp_st_rules *rule, nss_udp_
 		return -EINVAL;
 	}
 
+	rule->ppe_conn = create->conn_ptr;
+	rule->ppe_conn_valid = true;
+
 	pr_info("UDP-ST: PPE IPv4 flow created:\n");
 	pr_info("  5-tuple: %pI4:%u -> %pI4:%u (UDP)\n",
 		&rule->sip.ip.ipv4, rule->sport,
@@ -1365,14 +1372,17 @@ static int nss_udp_st_ppe_create_flow_v6(struct nss_udp_st_rules *rule, nss_udp_
 	}
 
 	ret = ppe_drv_v6_create(create);
-	kfree(create);
 	if (ret != PPE_DRV_RET_SUCCESS) {
 		pr_err("Failed to create PPE IPv6 flow, ret: %d in %d direction\n", ret, dir);
+		kfree(create);
 		if (port_dev)
 			dev_put(port_dev);
 		dev_put(wan_dev);
 		return -EINVAL;
 	}
+
+	rule->ppe_conn = create->conn_ptr;
+	rule->ppe_conn_valid = true;
 
 	pr_info("UDP-ST: PPE IPv6 flow created:\n");
 	pr_info("  VP  device: %s (iface_idx: %d, vp_num: %d)\n",
@@ -1382,6 +1392,7 @@ static int nss_udp_st_ppe_create_flow_v6(struct nss_udp_st_rules *rule, nss_udp_
 		pr_info("  Bridge port: %s (iface_idx: %d)\n", port_dev->name, port_iface_idx);
 	pr_info("  Dest MAC: %pM\n", dest_mac);
 
+	kfree(create);
 	if (port_dev)
 		dev_put(port_dev);
 	dev_put(wan_dev);
@@ -1499,84 +1510,90 @@ void nss_udp_st_destroy_ppe_flow(struct nss_udp_st_rules *rules)
 		rules->policer_ctx = NULL;
 		rules->policer_rule_id = 0;
 	}
+
+	rules->ppe_conn = NULL;
+	rules->ppe_conn_valid = false;
 }
 
 /*
  * nss_udp_st_ppe_query_flow_stats_v4()
- *	Query PPE hardware counters for IPv4 flow.
- *	For RX the PPE flow tuple is reversed (dip/dport as flow, sip/sport as return).
+ *	Query PPE hardware counters directly via connection handle for IPv4 flow.
  */
 static int nss_udp_st_ppe_query_flow_stats_v4(struct nss_udp_st_rules *rule,
 					       int64_t *delta_pkts,
+					       int64_t *delta_bytes,
 					       nss_udp_st_ppe_dir_t dir)
 {
-	struct ppe_drv_v4_flow_conn_stats conn_stats;
+	uint64_t orig_delta_pkts, orig_delta_bytes;
+	uint64_t reply_delta_pkts, reply_delta_bytes;
 	ppe_drv_ret_t ret;
 
-	memset(&conn_stats, 0, sizeof(conn_stats));
-	conn_stats.tuple.protocol = IPPROTO_UDP;
-
-	if (dir == NSS_UDP_ST_PPE_TX_DIR) {
-		conn_stats.tuple.flow_ip     = rule->sip.ip.ipv4;
-		conn_stats.tuple.flow_ident  = rule->sport;
-		conn_stats.tuple.return_ip   = rule->dip.ip.ipv4;
-		conn_stats.tuple.return_ident = rule->dport;
-	} else {
-		conn_stats.tuple.flow_ip     = rule->dip.ip.ipv4;
-		conn_stats.tuple.flow_ident  = rule->dport;
-		conn_stats.tuple.return_ip   = rule->sip.ip.ipv4;
-		conn_stats.tuple.return_ident = rule->sport;
-	}
-
-	ret = ppe_drv_v4_get_conn_stats(&conn_stats);
-	if (ret != PPE_DRV_RET_SUCCESS) {
-		pr_debug("UDP-ST PPE: ppe_drv_v4_get_conn_stats failed ret=%d"
-			 " for %pI4:%u -> %pI4:%u\n",
-			 ret,
-			 &rule->sip.ip.ipv4, rule->sport,
-			 &rule->dip.ip.ipv4, rule->dport);
+	if (!rule->ppe_conn_valid) {
 		return -EINVAL;
 	}
 
-	*delta_pkts = conn_stats.conn_sync.flow_rx_packet_count;
+	ret = ppe_drv_v4_conn_hw_stats_get((struct ppe_drv_v4_conn *)rule->ppe_conn,
+			&orig_delta_pkts, &orig_delta_bytes, &reply_delta_pkts, &reply_delta_bytes);
+	if (ret != PPE_DRV_RET_SUCCESS) {
+		pr_debug("UDP-ST PPE: ppe_drv_v4_conn_hw_stats_get failed ret=%d for conn=%p\n",
+			 ret, rule->ppe_conn);
+		return -EINVAL;
+	}
+
+	/* UDP-ST installs the measured traffic as the original flow for both TX and RX. */
+	*delta_pkts = orig_delta_pkts;
+	*delta_bytes = orig_delta_bytes;
 	return 0;
 }
 
 /*
  * nss_udp_st_ppe_query_flow_stats_v6()
- *	Query PPE hardware counters for IPv6 flow.
- *	For RX the PPE flow tuple is reversed (dip/dport as flow, sip/sport as return).
+ *	Query PPE hardware counters directly via connection handle for IPv6 flow.
  */
 static int nss_udp_st_ppe_query_flow_stats_v6(struct nss_udp_st_rules *rule,
-					       uint64_t *delta_pkts,
+					       int64_t *delta_pkts,
+					       int64_t *delta_bytes,
 					       nss_udp_st_ppe_dir_t dir)
 {
-	struct ppe_drv_v6_flow_conn_stats conn_stats;
+	uint64_t orig_delta_pkts, orig_delta_bytes;
+	uint64_t reply_delta_pkts, reply_delta_bytes;
 	ppe_drv_ret_t ret;
 
-	memset(&conn_stats, 0, sizeof(conn_stats));
-	conn_stats.tuple.protocol = IPPROTO_UDP;
-
-	if (dir == NSS_UDP_ST_PPE_TX_DIR) {
-		nss_udp_st_ppe_ipv6_addr_fill(rule->sip.ip.ipv6, conn_stats.tuple.flow_ip);
-		conn_stats.tuple.flow_ident  = rule->sport;
-		nss_udp_st_ppe_ipv6_addr_fill(rule->dip.ip.ipv6, conn_stats.tuple.return_ip);
-		conn_stats.tuple.return_ident = rule->dport;
-	} else {
-		nss_udp_st_ppe_ipv6_addr_fill(rule->dip.ip.ipv6, conn_stats.tuple.flow_ip);
-		conn_stats.tuple.flow_ident  = rule->dport;
-		nss_udp_st_ppe_ipv6_addr_fill(rule->sip.ip.ipv6, conn_stats.tuple.return_ip);
-		conn_stats.tuple.return_ident = rule->sport;
-	}
-
-	ret = ppe_drv_v6_get_conn_stats(&conn_stats);
-	if (ret != PPE_DRV_RET_SUCCESS) {
-		pr_debug("UDP-ST PPE: ppe_drv_v6_get_conn_stats failed ret=%d\n", ret);
+	if (!rule->ppe_conn_valid) {
 		return -EINVAL;
 	}
 
-	*delta_pkts = conn_stats.conn_sync.flow_rx_packet_count;
+	ret = ppe_drv_v6_conn_hw_stats_get((struct ppe_drv_v6_conn *)rule->ppe_conn,
+			&orig_delta_pkts, &orig_delta_bytes, &reply_delta_pkts, &reply_delta_bytes);
+	if (ret != PPE_DRV_RET_SUCCESS) {
+		pr_debug("UDP-ST PPE: ppe_drv_v6_conn_hw_stats_get failed ret=%d for conn=%p\n",
+			 ret, rule->ppe_conn);
+		return -EINVAL;
+	}
+
+	/* UDP-ST installs the measured traffic as the original flow for both TX and RX. */
+	*delta_pkts = orig_delta_pkts;
+	*delta_bytes = orig_delta_bytes;
 	return 0;
+}
+
+/*
+ * nss_udp_st_ppe_l2_overhead_get()
+ *	Compute L2 overhead (Ethernet + VLAN, single or double tagged) of
+ *	nust_dev. PPPoE is not counted.
+ */
+uint16_t nss_udp_st_ppe_l2_overhead_get(void)
+{
+	uint16_t overhead = sizeof(struct ethhdr);
+
+	if (is_vlan_dev(nust_dev)) {
+		overhead += VLAN_HLEN;
+		if (is_vlan_dev(vlan_dev_next_dev(nust_dev))) {
+			overhead += VLAN_HLEN;
+		}
+	}
+
+	return overhead;
 }
 
 /*
@@ -1586,10 +1603,12 @@ static int nss_udp_st_ppe_query_flow_stats_v6(struct nss_udp_st_rules *rule,
 static void nss_udp_st_ppe_throughput_work_fn(struct work_struct *work)
 {
 	struct nss_udp_st_rules *pos, *n;
-	struct ppe_drv_policer_hw_stats pol_stats = {};
 	int64_t total_delta_pkts = 0;
+	int64_t total_delta_bytes = 0;
 	int64_t drop_delta_pkts = 0;
+	int64_t drop_delta_bytes = 0;
 	int64_t delta_pkts = 0;
+	int64_t delta_bytes = 0;
 	nss_udp_st_ppe_dir_t ppe_dir = (nust.dir == NSS_UDP_ST_TX) ?
 					NSS_UDP_ST_PPE_TX_DIR : NSS_UDP_ST_PPE_RX_DIR;
 
@@ -1599,86 +1618,165 @@ static void nss_udp_st_ppe_throughput_work_fn(struct work_struct *work)
 	/*
 	 * Query PPE hardware counters for every active flow and accumulate
 	 * per-flow policer drop deltas in the same pass.
-	 * ppe_drv_v4/v6_get_conn_stats returns delta (clears on read).
+	 * ppe_drv_v4/v6_conn_hw_stats_get returns delta since the last read.
 	 */
 	list_for_each_entry_safe(pos, n, &nust.rules.list, list) {
 		/*
-		 * TX only: accumulate policer-dropped packet count so we can
-		 * subtract them from total_delta_pkts below.
-		 * rpc is cumulative; subtract the stored baseline for the delta.
+		 * TX only: accumulate policer-dropped counters so we can
+		 * subtract them from total_delta_pkts/bytes below.
 		 */
 		if (pos->policer_ctx) {
-			pol_stats.drv_ctx.acl_ctx =
-				(struct ppe_drv_policer_acl *)pos->policer_ctx;
-			ppe_drv_policer_acl_get_hw_stats(&pol_stats,
+			uint64_t red_pkts, red_bytes;
+
+			if (ppe_drv_policer_acl_red_stats_get(
 					(struct ppe_drv_policer_acl *)pos->policer_ctx,
-					PPE_DRV_POLICER_DIRECTION_US);
-			drop_delta_pkts += pol_stats.hw_cntrs.rpc - pos->policer_prev_rpc;
-			pos->policer_prev_rpc = pol_stats.hw_cntrs.rpc;
+					&red_pkts, &red_bytes) == PPE_DRV_RET_SUCCESS) {
+				drop_delta_pkts += red_pkts;
+				drop_delta_bytes += red_bytes;
+			}
 		}
 
+		delta_pkts = 0;
+		delta_bytes = 0;
 		if (pos->ip_version & NSS_UDP_ST_FLAG_IPV4) {
 			if (nss_udp_st_ppe_query_flow_stats_v4(pos,
 							       &delta_pkts,
+							       &delta_bytes,
 							       ppe_dir) == 0) {
 				total_delta_pkts += delta_pkts;
+				total_delta_bytes += delta_bytes;
 			}
 		} else if (pos->ip_version & NSS_UDP_ST_FLAG_IPV6) {
 			if (nss_udp_st_ppe_query_flow_stats_v6(pos,
 							       &delta_pkts,
+							       &delta_bytes,
 							       ppe_dir) == 0) {
 				total_delta_pkts += delta_pkts;
+				total_delta_bytes += delta_bytes;
 			}
 		}
 
 	}
 
 	/*
-	 * For TX, total_delta_pkts includes packets seen at VP ingress before
+	 * For TX, total_delta_pkts/bytes includes traffic seen at VP ingress before
 	 * the policer drops them. Subtract policer drops to get only the
-	 * packets that made it to the wire.
-	 * For RX there is no policer so drop_delta_pkts is always 0.
+	 * traffic that made it to the wire.
+	 * For RX there is no policer so drop deltas are always 0.
 	 */
 	total_delta_pkts -= drop_delta_pkts;
+	total_delta_bytes -= drop_delta_bytes;
 
-	if (total_delta_pkts > 0) {
-		nss_udp_st_update_stats(
-			(size_t)(nust.config.buffer_sz + sizeof(struct ethhdr)),
-			total_delta_pkts);
+	if ((total_delta_pkts > 0) && (total_delta_bytes > 0)) {
+		nss_udp_st_update_hw_offload_stats(total_delta_pkts, total_delta_bytes);
 	}
 
 	queue_delayed_work(ppe_stats_wq, to_delayed_work(work),
 			   msecs_to_jiffies(NSS_UDP_ST_PPE_POLL_MS));
 }
 
+
 /*
- * nss_udp_st_ppe_reset_policer_stats()
- *	Snapshot each flow's current cumulative rpc so the next test run
- *	starts from a correct baseline (no stale drops from a prior run).
+ * nss_udp_st_ppe_hrtimer_cb()
+ *	Hrtimer callback for PPE HW offload RX stats.
  */
-void nss_udp_st_ppe_reset_policer_stats(void)
+static enum hrtimer_restart nss_udp_st_ppe_hrtimer_cb(struct hrtimer *timer)
 {
 	struct nss_udp_st_rules *pos;
-	struct ppe_drv_policer_hw_stats pol_stats = {};
+	int64_t delta_pkts = 0;
+	int64_t delta_bytes = 0;
+	int64_t total_delta_pkts = 0;
+	int64_t total_delta_bytes = 0;
 
+	if (!ppe_stats_wq)
+		return HRTIMER_NORESTART;
+
+	/*
+	 * Runs in softirq context (HRTIMER_MODE_REL_SOFT), so PPE stats
+	 * APIs (which use spin_lock_bh) are safe to call here. Polls flow counters
+	 * every NSS_UDP_ST_PPE_HRTIMER_NS until the first packet arrives, then
+	 * kicks the workqueue and stops.
+	 */
 	list_for_each_entry(pos, &nust.rules.list, list) {
-		if (!pos->policer_ctx)
-			continue;
-
-		pol_stats.drv_ctx.acl_ctx =
-			(struct ppe_drv_policer_acl *)pos->policer_ctx;
-		ppe_drv_policer_acl_get_hw_stats(&pol_stats,
-				(struct ppe_drv_policer_acl *)pos->policer_ctx,
-				PPE_DRV_POLICER_DIRECTION_US);
-		pos->policer_prev_rpc = pol_stats.hw_cntrs.rpc;
+		delta_pkts = 0;
+		delta_bytes = 0;
+		if (pos->ip_version & NSS_UDP_ST_FLAG_IPV4)
+			nss_udp_st_ppe_query_flow_stats_v4(pos, &delta_pkts, &delta_bytes, NSS_UDP_ST_PPE_RX_DIR);
+		else if (pos->ip_version & NSS_UDP_ST_FLAG_IPV6)
+			nss_udp_st_ppe_query_flow_stats_v6(pos, &delta_pkts, &delta_bytes, NSS_UDP_ST_PPE_RX_DIR);
+		total_delta_pkts += delta_pkts;
+		total_delta_bytes += delta_bytes;
 	}
+
+	if ((total_delta_pkts <= 0) || (total_delta_bytes <= 0)) {
+		hrtimer_forward_now(timer, ns_to_ktime(NSS_UDP_ST_PPE_HRTIMER_NS));
+		return HRTIMER_RESTART;
+	}
+
+	/*
+	 * First batch of RX packets detected. Account for them now so
+	 * TIME_START is anchored to actual first-traffic arrival and
+	 * these packets are not silently discarded before the workqueue
+	 * takes over.
+	 */
+	nss_udp_st_update_hw_offload_stats(total_delta_pkts, total_delta_bytes);
+
+	queue_delayed_work(ppe_stats_wq, &ppe_stats_work, 0);
+	return HRTIMER_NORESTART;
 }
 
 /*
- * nss_udp_st_ppe_throughput_timer_start()
- *	Create the per-second PPE throughput stats workqueue
+ * nss_udp_st_ppe_stats_wq_create()
+ *	Create the PPE stats workqueue if not already created.
  */
-bool nss_udp_st_ppe_throughput_timer_start(void)
+static bool nss_udp_st_ppe_stats_wq_create(void)
+{
+	if (ppe_stats_wq) {
+		pr_warn("UDP-ST PPE stats workqueue already running\n");
+		return true;
+	}
+
+	ppe_stats_wq = create_singlethread_workqueue("udpst_ppe");
+	if (!ppe_stats_wq) {
+		pr_err("UDP-ST PPE: failed to create stats workqueue\n");
+		return false;
+	}
+
+	INIT_DELAYED_WORK(&ppe_stats_work, nss_udp_st_ppe_throughput_work_fn);
+	return true;
+}
+
+/*
+ * nss_udp_st_ppe_rx_hrtimer_start()
+ *	Start hrtimer-based stats polling for the RX HW offload path.
+ */
+bool nss_udp_st_ppe_rx_hrtimer_start(void)
+{
+	if (!nss_udp_st_ppe_stats_wq_create()) {
+		return false;
+	}
+
+	/*
+	 * Uses HRTIMER_MODE_REL_SOFT because the RX callback calls
+	 * ppe_drv_v4/v6_conn_hw_stats_get(), which takes the PPE driver's
+	 * global lock via spin_lock_bh()/spin_unlock_bh(). Those _bh primitives
+	 * are only valid from process or softirq context
+	 */
+	hrtimer_init(&ppe_hrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_REL_SOFT);
+	ppe_hrtimer.function = nss_udp_st_ppe_hrtimer_cb;
+	ppe_hrtimer_active = true;
+	hrtimer_start(&ppe_hrtimer, ns_to_ktime(NSS_UDP_ST_PPE_HRTIMER_NS), HRTIMER_MODE_REL_SOFT);
+
+	pr_info("UDP-ST PPE RX: hrtimer armed (%lluns), workqueue polls every %dms\n",
+		NSS_UDP_ST_PPE_HRTIMER_NS, NSS_UDP_ST_PPE_POLL_MS);
+	return true;
+}
+
+/*
+ * nss_udp_st_ppe_tx_timer_start()
+ *	Create the PPE hardware offload TX stats workqueue
+ */
+bool nss_udp_st_ppe_tx_timer_start(void)
 {
 	if (ppe_stats_wq) {
 		pr_warn("UDP-ST PPE: stats timer already running\n");
@@ -1692,19 +1790,6 @@ bool nss_udp_st_ppe_throughput_timer_start(void)
 	}
 
 	INIT_DELAYED_WORK(&ppe_stats_work, nss_udp_st_ppe_throughput_work_fn);
-
-	/*
-	 * Snapshot each flow's current cumulative rpc so the first poll
-	 * delta starts from the correct baseline (no stale hardware counts).
-	 */
-	nss_udp_st_ppe_reset_policer_stats();
-
-	/*
-	 * Start the stats update with 1 packet so that there is lesser
-	 */
-	if (nust.dir == NSS_UDP_ST_TX) {
-		nss_udp_st_update_stats(nust.config.buffer_sz + sizeof(struct ethhdr), 1);
-	}
 
 	queue_delayed_work(ppe_stats_wq, &ppe_stats_work,
 			   msecs_to_jiffies(NSS_UDP_ST_PPE_POLL_MS));
@@ -1720,6 +1805,11 @@ bool nss_udp_st_ppe_throughput_timer_start(void)
  */
 void nss_udp_st_ppe_throughput_timer_stop(void)
 {
+	if (ppe_hrtimer_active) {
+		hrtimer_cancel(&ppe_hrtimer);
+		ppe_hrtimer_active = false;
+	}
+
 	if (!ppe_stats_wq)
 		return;
 

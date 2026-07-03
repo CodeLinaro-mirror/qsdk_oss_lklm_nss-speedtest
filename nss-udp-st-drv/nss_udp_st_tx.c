@@ -382,7 +382,7 @@ static void nss_udp_st_tx_packets_ppe_vp(struct net_device *ndev, struct nss_udp
 
 	*out_skb = skb;
 
-	nss_udp_st_update_stats(ip_len + sizeof(struct ethhdr), 1);
+	nss_udp_st_update_stats(ip_len + nss_udp_st_ppe_l2_overhead_get(), 1);
 }
 #endif /* NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE */
 
@@ -1305,7 +1305,7 @@ bool nss_udp_st_tx_hw_offload(void)
 
 	ppe_vp_mtu_set(nss_udp_st_ppe_vp_num_get(), nust_dev->mtu);
 	/*
-	 * Initialize L2 overhead
+	 * Initialize L2 overhead (Ethernet + VLAN only; PPPoE is not counted)
 	 */
 	l2_overhead = sizeof(struct ethhdr);
 

@@ -40,12 +40,13 @@ void nss_udp_st_ppe_policer_destroy(void);
 ppe_vp_num_t nss_udp_st_ppe_vp_num_get(void);
 struct net_device *nss_udp_st_ppe_vp_dev_get(void);
 bool nss_udp_st_ppe_is_gem_port(struct net_device *dev);
+uint16_t nss_udp_st_ppe_l2_overhead_get(void);
 
 int nss_udp_st_ppe_create_flows(nss_udp_st_ppe_dir_t dir);
 void nss_udp_st_destroy_ppe_flow(struct nss_udp_st_rules *rules);
 
-bool nss_udp_st_ppe_throughput_timer_start(void);
+bool nss_udp_st_ppe_tx_timer_start(void);
 void nss_udp_st_ppe_throughput_timer_stop(void);
-void nss_udp_st_ppe_reset_policer_stats(void);
+bool nss_udp_st_ppe_rx_hrtimer_start(void);
 
 #endif  /*NSS_UDP_ST_PPE_H*/
