@@ -35,6 +35,7 @@ bool is_dummy_vp_exists = false;
 struct delayed_work nss_udp_st_tx_delayed_work;
 struct workqueue_struct *work_queue;
 void nss_udp_st_update_stats(size_t pkt_size, int64_t num_pkts);
+void nss_udp_st_update_hw_offload_stats(int64_t num_pkts, int64_t num_bytes);
 uint64_t nss_udp_st_tx_num_pkt;
 struct net_device *nust_dev;
 struct nss_udp_st_rules *exception_dport_rules;
@@ -278,10 +279,6 @@ static void nss_udp_st_reset_stats(void)
 	atomic64_set(&nust.stats.p_stats.min_latency, U64_MAX);
 	atomic64_set(&nust.stats.p_stats.max_latency, 0);
 
-#ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
-	if (nust.config.flags & NSS_UDP_ST_FLAGS_HW_OFFLOAD)
-		nss_udp_st_ppe_reset_policer_stats();
-#endif
 
 	/*
 	 * Sequence counters are maintained per connection
@@ -481,10 +478,10 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 			}
 
 			/*
-			 * Start the 1-second periodic PPE throughput timer.
-			 * Every second it queries PPE hardware counters.
+			 * Polls PPE hardware counters every NSS_UDP_ST_PPE_POLL_MS
+			 * milliseconds.
 			 */
-			if (!nss_udp_st_ppe_throughput_timer_start()) {
+			if (!nss_udp_st_ppe_tx_timer_start()) {
 				nust.mode = NSS_UDP_ST_STOP;
 				nss_udp_st_clear_rules();
 				pr_err("Unable to start throughput timer\n");
@@ -540,7 +537,7 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 				return -EINVAL;
 			}
 
-			if (!nss_udp_st_ppe_throughput_timer_start()) {
+			if (!nss_udp_st_ppe_rx_hrtimer_start()) {
 				nss_udp_st_clear_rules();
 				pr_err("UDP-ST: PPE throughput timer start failed\n");
 				return -EINVAL;
@@ -756,6 +753,41 @@ static void __exit nss_udp_st_exit(void)
 	device_destroy(dump_class, MKDEV(dump_major, 0));
 	class_destroy(dump_class);
 	unregister_chrdev(dump_major, DEVICE_NAME);
+}
+
+/*
+ * nss_udp_st_update_hw_offload_stats()
+ *	update packet and byte stats from PPE hardware counter deltas.
+ */
+void nss_udp_st_update_hw_offload_stats(int64_t num_pkts, int64_t num_bytes)
+{
+	long time_curr;
+	long time_start;
+
+	atomic64_add(num_pkts, &nust.stats.ppe_stats.ppe_packets);
+	atomic64_add(num_bytes, &nust.stats.ppe_stats.ppe_bytes);
+	atomic64_inc(&nust.stats.ppe_stats.ppe_sample_count);
+
+	if (nust.stats.first_pkt) {
+		atomic64_set(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_START], (jiffies * div_u64(1000,HZ)));
+		nust.stats.first_pkt = false;
+	}
+
+	if (nust.dir == NSS_UDP_ST_TX) {
+		atomic64_add(num_pkts, &nust.stats.p_stats.tx_packets);
+		atomic64_add(num_bytes, &nust.stats.p_stats.tx_bytes);
+	}
+
+	if (nust.dir == NSS_UDP_ST_RX) {
+		atomic64_add(num_pkts, &nust.stats.p_stats.rx_packets);
+		atomic64_add(num_bytes, &nust.stats.p_stats.rx_bytes);
+	}
+
+	atomic64_set(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_CURRENT], (jiffies * div_u64(1000,HZ)));
+
+	time_curr = atomic64_read(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_CURRENT]);
+	time_start = atomic64_read(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_START]);
+	atomic64_set(&nust.stats.timer_stats[NSS_UDP_ST_STATS_TIME_ELAPSED], (long)(time_curr - time_start));
 }
 
 /*
