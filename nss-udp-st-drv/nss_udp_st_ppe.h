@@ -10,6 +10,8 @@
 
 struct ppe_drv_policer_acl;
 
+#define NSS_UDP_ST_PPE_MAX_FLOWS	16	/* Maximum flows supported by hardware offload */
+
 /*
  * nss_udp_st_ppe_dir
  *	enum to check tx/rx direction

@@ -228,6 +228,20 @@ static ssize_t nss_udp_st_write(struct file *file, const char __user *buf,
 	udp_st_debug("CPU: %d, nust_bitmap %u base: nust.config.cpu_bitmap %u ", cpu, nust.bitmap_curr, nust.config.cpu_bitmap);
 	rules->cpu = cpu;
 
+#ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
+	/*
+	 * Enforce maximum flow limit for hardware offload.
+	 * Reject any rule that would exceed NSS_UDP_ST_PPE_MAX_FLOWS.
+	 */
+	if ((nust.config.flags & NSS_UDP_ST_FLAGS_HW_OFFLOAD) &&
+	    (nust.rule_count >= NSS_UDP_ST_PPE_MAX_FLOWS)) {
+		pr_err("UDP-ST: Hardware offload supports a maximum of %d max flows\n",
+		       NSS_UDP_ST_PPE_MAX_FLOWS);
+		kfree(rules);
+		return -EINVAL;
+	}
+#endif
+
 	list_add_tail(&(rules->list), &(nust.rules.list));
 	nust.rule_count++;
 	rules->rule_id = nust.rule_count;

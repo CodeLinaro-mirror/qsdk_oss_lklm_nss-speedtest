@@ -1389,6 +1389,12 @@ int nss_udp_st_ppe_create_flows(nss_udp_st_ppe_dir_t dir)
 	}
 
 	list_for_each_entry_safe(rule, n, &nust.rules.list, list) {
+		if (count >= NSS_UDP_ST_PPE_MAX_FLOWS) {
+			pr_warn("UDP-ST: Maximum MAX flow limit (%d) reached, stopping flow creation\n",
+				NSS_UDP_ST_PPE_MAX_FLOWS);
+			break;
+		}
+
 		if (rule->ip_version & NSS_UDP_ST_FLAG_IPV4) {
 			ret = nss_udp_st_ppe_create_flow_v4(rule, dir);
 		} else if (rule->ip_version & NSS_UDP_ST_FLAG_IPV6) {
