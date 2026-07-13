@@ -475,12 +475,18 @@ bool nss_udp_st_rx_rfs_rule_create() {
 	struct nss_udp_st_rules *n = NULL;
 	struct ppe_rfs_ipv4_rule_create_msg pr4rc = {0};
 	struct ppe_rfs_ipv6_rule_create_msg pr6rc = {0};
-	struct net_device *dev = ppe_vp_get_netdev_by_port_num(nust.dummy_vp_num);
+	struct net_device *dev;
 	struct pppoe_opt info;
 	struct ppp_channel *ppp_chan[1];
         int channel_count;
         int channel_protocol;
 
+	if (!is_dummy_vp_exists) {
+		udp_st_err("dummy vp is not created");
+		return false;
+	}
+
+	dev = ppe_vp_get_netdev_by_port_num(nust.dummy_vp_num);
 	if(!dev) {
 		udp_st_err("dev is null");
 		return false;

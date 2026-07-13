@@ -51,6 +51,7 @@ extern uint64_t nss_udp_st_tx_num_pkt;
 extern struct net_device *nust_dev;
 extern struct nss_udp_st_rules *exception_dport_rules;
 extern uint8_t exception_rules_cnt;
+extern bool is_dummy_vp_exists;
 #endif
 
 /*
