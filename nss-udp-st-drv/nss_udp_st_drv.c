@@ -9,6 +9,7 @@
 #include <linux/major.h>
 #include <linux/version.h>
 #include <linux/math64.h>
+#include <linux/if_vlan.h>
 #include <net/netfilter/nf_conntrack_core.h>
 #ifdef NSS_UDP_ST_DRV_VP_ENABLE
 #include <ppe_drv.h>
@@ -281,6 +282,47 @@ static void nss_udp_st_reset_stats(void)
 }
 
 /*
+ * nss_udp_st_init_validate_rate()
+ *	Validate the configured rate against the max bandwidth of the
+*	configured net device at init time.
+ */
+static bool nss_udp_st_init_validate_rate(void)
+{
+	struct net_device *dev;
+	struct net_device *phys_dev;
+	bool valid;
+
+	dev = dev_get_by_name(&init_net, nust.config.net_dev);
+	if (!dev) {
+		udp_st_err("Cannot find net device %s for rate validation\n", nust.config.net_dev);
+		return false;
+	}
+
+	if (dev->type == ARPHRD_PPP) {
+		/*
+		 * Check if the WAN device is pppoe interface
+		 */
+		if (nss_udp_st_pppoe_iface_config(dev) < 0) {
+			udp_st_err("Cannot resolve PPPoE physical device for %s\n", nust.config.net_dev);
+			dev_put(dev);
+			return false;
+		}
+
+		phys_dev = nss_udp_st_get_xmit_dev();
+		nust.pppoe_info.dev = NULL;
+	} else if (is_vlan_dev(dev)) {
+		phys_dev = vlan_dev_next_dev(dev);
+	} else {
+		phys_dev = dev;
+	}
+
+	valid = nss_udp_st_validate_rate(phys_dev, nust.config.rate);
+	dev_put(dev);
+
+	return valid;
+}
+
+/*
  * nss_udp_st_ioctl()
  *	receive ioctl to init / start / stop test
  */
@@ -295,6 +337,12 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 		memset(&(nust.config), 0, sizeof(struct nss_udp_st_param));
 		ret = copy_from_user((void *)&(nust.config), (void __user *)arg, sizeof(struct nss_udp_st_param));
 		if (ret) {
+			return -EINVAL;
+		}
+
+		if (!nss_udp_st_init_validate_rate()) {
+			udp_st_err("Configured rate %u Mbps exceeds max bandwidth of interface %s\n",
+				    nust.config.rate, nust.config.net_dev);
 			return -EINVAL;
 		}
 

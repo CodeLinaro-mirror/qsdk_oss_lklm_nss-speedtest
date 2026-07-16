@@ -573,7 +573,7 @@ static int nss_udp_st_vlan_iface_config(struct net_device *dev)
  * nss_udp_st_pppoe_iface_config
  *	Configure the WLAN interface as PPPoE
  */
-static int nss_udp_st_pppoe_iface_config(struct net_device *dev)
+int nss_udp_st_pppoe_iface_config(struct net_device *dev)
 {
 	struct ppp_channel *ppp_chan[1];
 	int channel_count;
@@ -992,6 +992,53 @@ static uint32_t nss_udp_st_tx_get_link_speed(struct net_device *dev)
 
 	pr_info("nss_udp_st_tx_get_link_speed: using physical device %s\n", dev->name);
 	return speed_mbps;
+}
+
+/*
+ * nss_udp_st_validate_rate
+ *	Reject a configured rate that exceeds the max bandwidth (link speed)
+ *	of the given physical interface.
+ */
+/*
+ * nss_udp_st_get_xmit_dev()
+ *	Return the currently resolved TX physical device
+ */
+struct net_device *nss_udp_st_get_xmit_dev(void)
+{
+	return xmit_dev;
+}
+
+bool nss_udp_st_validate_rate(struct net_device *dev, uint32_t rate)
+{
+	uint32_t link_speed;
+
+	if (!rate) {
+		return true;
+	}
+
+	if (!dev) {
+		pr_warn("Cannot validate rate: dev is NULL\n");
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_RATE]);
+		return false;
+	}
+
+	link_speed = nss_udp_st_tx_get_link_speed(dev);
+	if (!link_speed) {
+		pr_warn("Cannot determine link speed of dev %s\n", dev->name);
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_RATE]);
+		return false;
+	}
+
+	pr_info("Current link speed of interface %s: %u Mbps\n", dev->name, link_speed);
+
+	if (rate > link_speed) {
+		pr_warn("Requested rate %u Mbps exceeds max bandwidth %u Mbps of interface %s, rejecting\n",
+			rate, link_speed, dev->name);
+		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_RATE]);
+		return false;
+	}
+
+	return true;
 }
 
 /*
