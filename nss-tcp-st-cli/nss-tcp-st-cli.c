@@ -26,6 +26,9 @@
 #include <arpa/inet.h>
 #include <curl/curl.h>
 #include <inttypes.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <sys/socket.h>
 #include "nss-tcp-st.h"
 
 #define NSS_TCPST_CL_GB_TO_BYTES 1000000000
@@ -46,6 +49,7 @@ static struct option start_longopt[] = {
 	{"connections", required_argument, NULL, 'n'},
 	{"core_mask", required_argument, NULL, 'c'},
 	{"server_ip", required_argument, NULL, 'i'},
+	{"bind", required_argument, NULL, 'b'},
 	{"port", required_argument, NULL, 'p'},
 	{"buffer_len", required_argument, NULL, 'l'},
 	{"user_agent", required_argument, NULL, 'u'},
@@ -104,6 +108,7 @@ static void nss_tcp_st_cli_usage(void)
 	nss_tcp_st_log_info("\tnss-tcp-st [-m | --mode] start [options]\n");
 	nss_tcp_st_log_info("\nOptions:\n");
 	nss_tcp_st_log_info("-i, --server_ip\t\t< IPv4/v6 address of the server >\n");
+	nss_tcp_st_log_info("-b, --bind\t\t< Source/WAN IPv4/IPv6 address to bind socket >\n");
 	nss_tcp_st_log_info("-p, --port\t\t< Port number of the server >\n");
 	nss_tcp_st_log_info("-l, --buffer_len\t< Socket buffer length for test >\n");
 	nss_tcp_st_log_info("-g, --type\t\t< Test type: http_download / http_upload / raw_download / raw_upload >\n");
@@ -188,6 +193,17 @@ static int nss_tcp_st_cli_log_cfg(struct netfn_tcpst_cfg *st_cfg, bool time_base
 				ntohl(st_cfg->remote.ip.v6.s6_addr32[3]));
 	}
 
+	if (st_cfg->local.ip_version == 4) {
+		fprintf(fp, "Local IP address:%x\n", ntohl(st_cfg->local.ip.v4.s_addr));
+	} else {
+		fprintf(fp, "Local IP address:%x%x%x%x\n", ntohl(st_cfg->local.ip.v6.s6_addr32[0]),
+				ntohl(st_cfg->local.ip.v6.s6_addr32[1]),
+				ntohl(st_cfg->local.ip.v6.s6_addr32[2]),
+				ntohl(st_cfg->local.ip.v6.s6_addr32[3]));
+	}
+
+	fprintf(fp, "Local device:%s\n", st_cfg->if_name[0] ? st_cfg->if_name : "none");
+
 	if (st_cfg->test == NETFN_TCPST_TEST_HTTP_DOWNLOAD || st_cfg->test == NETFN_TCPST_TEST_HTTP_UPLOAD) {
 		fprintf(fp, "Hdr:%s\nHdr len:%d\n", st_cfg->http.hdr, st_cfg->http.hdr_len);
 	}
@@ -198,6 +214,78 @@ static int nss_tcp_st_cli_log_cfg(struct netfn_tcpst_cfg *st_cfg, bool time_base
 	fclose(fp);
 
 	return 0;
+}
+
+/*
+ * nss_tcp_st_cli_get_src_dev()
+ *	Resolve interface name from local source IP
+ */
+static int nss_tcp_st_cli_get_src_dev(struct netfn_tcpst_cfg *st_cfg)
+{
+	struct ifaddrs *ifaddr = NULL, *ifa;
+	char *ifname = NULL;
+	int err = 0;
+	int family;
+
+	if (!st_cfg->local.ip_version)
+		return 0;
+
+	err = getifaddrs(&ifaddr); 
+	if (err < 0) {
+		nss_tcp_st_log_error("%px: Failed tofind egress I/F\n", st_cfg);
+		return err;
+	}
+
+	for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+		/*
+		 * If interface is not initialized then skip
+		 */
+		if (!ifa->ifa_addr || !ifa->ifa_name)
+			continue;
+		/*
+		 * Check if the interface is UP or its a loopback one
+		 */
+		if (!(ifa->ifa_flags & IFF_UP) || (ifa->ifa_flags & IFF_LOOPBACK))
+			continue;
+
+		family = ifa->ifa_addr->sa_family;
+		if ((st_cfg->local.ip_version == 4) && (family == AF_INET)) {
+			struct sockaddr_in *sin = (struct sockaddr_in *)ifa->ifa_addr;
+
+			if (sin->sin_addr.s_addr == st_cfg->local.ip.v4.s_addr) {
+				ifname = ifa->ifa_name;
+				break;
+			}
+		}
+
+		if ((st_cfg->local.ip_version == 6) && (family == AF_INET6)) {
+			struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)ifa->ifa_addr;
+			struct in6_addr *in_addr = &sin6->sin6_addr;
+
+			if (!memcmp(in_addr, &st_cfg->local.ip.v6, sizeof(*in_addr))) {
+				ifname = ifa->ifa_name;
+				break;
+			}
+		}
+	}
+
+	/*
+	 * Check if the interface name was found
+	 */
+	if (!ifname)
+		goto fail;
+	/*
+	 * Copy the interface name matched against the source IP
+	 */
+	strlcpy(st_cfg->if_name, ifname, sizeof(st_cfg->if_name));
+	freeifaddrs(ifaddr);
+	return 0;
+
+
+fail:
+	freeifaddrs(ifaddr);
+	nss_tcp_st_log_error("%px: Failed to find source dev\n", st_cfg);
+	return -ENODEV;
 }
 
 /*
@@ -250,6 +338,24 @@ static bool nss_tcp_st_cli_start(int args, char **argv)
 				snprintf(ip, INET6_ADDRSTRLEN + 2, "[%s]", optarg);
 			} else {
 				nss_tcp_st_log_error("%px:Invalid server IP Address %s\n", argv, ip);
+				return false;
+			}
+
+			break;
+
+		case 'b':
+			if (inet_pton(AF_INET, optarg, &st_cfg.local.ip.v4)) {
+				st_cfg.local.ip_version = 4;
+			} else if (inet_pton(AF_INET6, optarg, &st_cfg.local.ip.v6)) {
+				st_cfg.local.ip_version = 6;
+			} else {
+				nss_tcp_st_log_error("%px:Invalid source IP Address %s\n", argv, optarg);
+				return false;
+			}
+
+			error = nss_tcp_st_cli_get_src_dev(&st_cfg);
+			if (error) {
+				nss_tcp_st_log_info("%px:Failed to resolve Source device from SIP, binding disabled\n", argv);
 				return false;
 			}
 
@@ -347,6 +453,12 @@ static bool nss_tcp_st_cli_start(int args, char **argv)
 			nss_tcp_st_cli_usage();
 			return false;
 		}
+	}
+
+	if (st_cfg.local.ip_version &&
+			(st_cfg.local.ip_version != st_cfg.remote.ip_version)) {
+		nss_tcp_st_log_error("%px:Source & Server IP version mismatch\n", argv);
+		return false;
 	}
 
 	if (http) {
