@@ -6,6 +6,7 @@
 #include <linux/list.h>
 #include <linux/string.h>
 #include <linux/hrtimer.h>
+#include <linux/moduleparam.h>
 #include <linux/math64.h>
 #include <linux/ethtool.h>
 #include <linux/rtnetlink.h>
@@ -38,6 +39,10 @@ static uint16_t l2_overhead;
 
 struct work_struct udp_st_work[NR_CPUS];	/* Work struct */
 struct workqueue_struct *udp_st_wq[NR_CPUS];	/* workqueue struct */
+
+static uint32_t nss_udp_st_tx_max_num_pkt = NSS_UDP_ST_TX_DEFAULT_MAX_NUM_PKT;
+module_param(nss_udp_st_tx_max_num_pkt, uint, 0644);
+MODULE_PARM_DESC(nss_udp_st_tx_max_num_pkt, "Max packets generated per rule per timer tick");
 
 /*
  * nss_udp_st_generate_ipv4_hdr()
@@ -228,6 +233,7 @@ static void nss_udp_st_tx_packets_vp(struct net_device *ndev, struct nss_udp_st_
                 udp_len = pkt_sz - sizeof(*ipv6h);
         } else {
                 atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_IP_VERSION]);
+                dev_kfree_skb_any(skb);
                 return;
         }
 
@@ -899,6 +905,16 @@ static void nss_udp_st_tx_rate_config(uint64_t total_bps)
 		} else {
 			nss_udp_st_tx_num_pkt = nust.config.burst_size + 1;
 		}
+	}
+
+	/*
+	 * Cap the number of packets generated per rule per timer tick to avoid
+	 * bursts large enough to overrun the TX ring / OOM the system.
+	 */
+	if (nss_udp_st_tx_num_pkt > nss_udp_st_tx_max_num_pkt) {
+		pr_warn("Requested pkt/tick %llu exceeds max %u, capping\n",
+			nss_udp_st_tx_num_pkt, nss_udp_st_tx_max_num_pkt);
+		nss_udp_st_tx_num_pkt = nss_udp_st_tx_max_num_pkt;
 	}
 
 	/*

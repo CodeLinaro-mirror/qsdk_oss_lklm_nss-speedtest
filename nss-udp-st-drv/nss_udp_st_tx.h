@@ -9,6 +9,7 @@
 #define NSS_UDP_ST_TX_DEFAULT_TIMEOUT 50	/* Default Tx test duration*/
 #define NSS_UDP_ST_TX_DEFAULT_TIMER_FREQ 100	/* To caluculate pkt per 10 ms */
 #define NSS_UDP_ST_TX_MAX_TIMER_FREQ 2000	/* Max supported frequency (500 us) */
+#define NSS_UDP_ST_TX_DEFAULT_MAX_NUM_PKT 3600	/* Default max packets generated per rule per timer tick */
 #define NSS_UDP_ST_MIN_HEADROOM 32		/* Min headroom needed */
 #define NSS_UDP_ST_MIN_TAILROOM 32		/* Min tailroom needed */
 #define NSS_UDP_ST_PROCESS_NAME_SZ 8		/* Size of buffer used to store process name */
