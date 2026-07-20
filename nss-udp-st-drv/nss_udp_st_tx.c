@@ -917,16 +917,42 @@ static bool nss_udp_st_tx_init(void)
 	struct nss_udp_st_rules *pos = NULL;
 	struct nss_udp_st_rules *n = NULL;
 
-	if (nust.config.buffer_sz < NSS_UDP_ST_BUFFER_SIZE_MIN) {
-		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_BUFFER_SIZE]);
-		udp_st_err("Invalid buffer size given: %u. Min buffer size required: %u", nust.config.buffer_sz, NSS_UDP_ST_BUFFER_SIZE_MIN);
+	if (!nss_udp_st_set_dev()) {
+		udp_st_err("Failed to set dev\n");
 		return false;
 	}
 
-	if (nust.config.buffer_sz > NSS_UDP_ST_BUFFER_SIZE_MAX) {
+	if (nust.config.buffer_sz < NSS_UDP_ST_BUFFER_SIZE_MIN) {
 		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_BUFFER_SIZE]);
-		udp_st_err("Invalid buffer size given: %u. Max buffer size allowed: %u", nust.config.buffer_sz, NSS_UDP_ST_BUFFER_SIZE_MAX);
+		udp_st_err("Invalid buffer size given: %u. Min buffer size required: %u", nust.config.buffer_sz, NSS_UDP_ST_BUFFER_SIZE_MIN);
+		dev_put(nust_dev);
 		return false;
+	}
+
+	if (nust.config.flags & NSS_UDP_ST_FLAGS_HW_OFFLOAD) {
+		uint32_t dev_mtu = nust_dev->mtu;
+
+		if (nust.config.buffer_sz > dev_mtu) {
+			atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_BUFFER_SIZE]);
+			udp_st_err("Invalid buffer size given: %u. Max buffer size allowed: %u", nust.config.buffer_sz, dev_mtu);
+			dev_put(nust_dev);
+			return false;
+		}
+
+	} else {
+		if (nust.config.buffer_sz > NSS_UDP_ST_BUFFER_SIZE_MAX) {
+			atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_BUFFER_SIZE]);
+			udp_st_err("Invalid buffer size given: %u. Max buffer size allowed: %u", nust.config.buffer_sz, NSS_UDP_ST_BUFFER_SIZE_MAX);
+			dev_put(nust_dev);
+			return false;
+		}
+
+		if (nust_dev->type == ARPHRD_PPP && nust.config.buffer_sz > (NSS_UDP_ST_BUFFER_SIZE_MAX - NSS_UDP_ST_PPPOE_OVERHEAD)) {
+			atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_BUFFER_SIZE]);
+			udp_st_err("Invalid buffer size given: %u. Max buffer size allowed for pppoe: %u", nust.config.buffer_sz, (NSS_UDP_ST_BUFFER_SIZE_MAX - NSS_UDP_ST_PPPOE_OVERHEAD));
+			dev_put(nust_dev);
+			return false;
+		}
 	}
 
 	/*
@@ -935,19 +961,9 @@ static bool nss_udp_st_tx_init(void)
 	list_for_each_entry_safe(pos, n, &nust.rules.list, list) {
 		if (pos->sport == 0 || pos->dport == 0) {
 			udp_st_err("Unable to tx with arbitrary ports: sport = %u, dport = %u", pos->sport, pos->dport);
+			dev_put(nust_dev);
 			return false;
 		}
-	}
-
-	if(!nss_udp_st_set_dev()) {
-		udp_st_err("Failed to set dev\n");
-		return false;
-	}
-
-	if (nust_dev->type == ARPHRD_PPP && nust.config.buffer_sz > (NSS_UDP_ST_BUFFER_SIZE_MAX - NSS_UDP_ST_PPPOE_OVERHEAD)) {
-		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_INCORRECT_BUFFER_SIZE]);
-		udp_st_err("Invalid buffer size given: %u. Max buffer size allowed for pppoe: %u", nust.config.buffer_sz, (NSS_UDP_ST_BUFFER_SIZE_MAX - NSS_UDP_ST_PPPOE_OVERHEAD));
-		return false;
 	}
 
 	return true;
@@ -1196,6 +1212,7 @@ bool nss_udp_st_tx_hw_offload(void)
 		return false;
 	}
 
+	ppe_vp_mtu_set(nss_udp_st_ppe_vp_num_get(), nust_dev->mtu);
 	/*
 	 * Initialize L2 overhead
 	 */
