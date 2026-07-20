@@ -210,6 +210,7 @@ static void nss_udp_st_add_seq_tstamp(struct sk_buff *skb, struct nss_udp_st_rul
  */
 static void nss_udp_st_tx_packets_vp(struct net_device *ndev, struct nss_udp_st_rules *rules, int cpu)
 {
+	struct ppe_vp_tx_info tx_info = {0};
 	struct sk_buff *skb;
 	size_t skb_sz;
 	size_t pkt_sz;
@@ -248,8 +249,9 @@ static void nss_udp_st_tx_packets_vp(struct net_device *ndev, struct nss_udp_st_
 	 * tx packet
 	 */
 	skb->dev = rules->tun_dev;
+	tx_info.type = PPE_VP_TX_TYPE_NONE;
 
-	if (!ppe_vp_tx_to_vp(rules->vp_num, skb)) {
+	if (!ppe_vp_tx_to_vp(rules->vp_num, &tx_info, skb)) {
 		udp_st_err("Dropping skb %pxd, edma failed to enqueue to PPE tun dev %p", skb, rules->tun_dev);
 		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_PACKET_DROP]);
 		return;
