@@ -308,6 +308,20 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 			return -EINVAL;
 		}
 
+		if (is_dummy_vp_exists) {
+			nss_udp_st_rx_free_dummy_vp(nust.dummy_vp_num);
+			is_dummy_vp_exists = false;
+		}
+
+		/*
+		 * Alloc dummy vp: Required for creating PPE RFS rule to enable RFS on the Rx side.
+		 */
+		nust.dummy_vp_num = nss_udp_st_rx_dummy_vp_alloc();
+
+		if (nust.dummy_vp_num != -1) {
+			is_dummy_vp_exists = true;
+		}
+
 #ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
 		if (nust.config.flags & NSS_UDP_ST_FLAGS_HW_OFFLOAD) {
 			/*
@@ -343,17 +357,6 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 			nss_udp_st_ppe_policer_init();
 		}
 #endif
-		if (is_dummy_vp_exists) {
-			nss_udp_st_rx_free_dummy_vp(nust.dummy_vp_num);
-			is_dummy_vp_exists = false;
-		}
-
-		nust.dummy_vp_num = nss_udp_st_rx_dummy_vp_alloc();
-
-		if (nust.dummy_vp_num != -1) {
-			is_dummy_vp_exists = true;
-		}
-
 		break;
 
 	case NSS_UDP_ST_IOCTL_START_TX:
