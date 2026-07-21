@@ -22,6 +22,12 @@ void nss_udp_st_tun_destroy(struct net_device *dev);
 
 bool nss_udp_st_tx_rate_change(uint32_t rate);
 
+bool nss_udp_st_validate_rate(struct net_device *dev, uint32_t rate);
+
+struct net_device *nss_udp_st_get_xmit_dev(void);
+
+int nss_udp_st_pppoe_iface_config(struct net_device *dev);
+
 bool nss_udp_st_tx_valid(void);
 
 bool nss_udp_st_tx(void);
