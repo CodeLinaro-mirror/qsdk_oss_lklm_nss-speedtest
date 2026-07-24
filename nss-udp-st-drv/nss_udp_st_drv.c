@@ -100,7 +100,7 @@ static void nss_udp_st_clear_rules(void)
 
 	list_for_each_entry_safe(pos, n, &nust.rules.list, list) {
 #ifdef NSS_UDP_ST_DRV_VP_ENABLE
-		if (nust.config.flags & NSS_UDP_ST_FLAGS_VP) {
+		if ((nust.config.flags & NSS_UDP_ST_FLAGS_VP) && !(nust.config.flags & NSS_UDP_ST_FLAGS_HW_OFFLOAD)) {
 			nss_udp_st_tun_destroy(pos->tun_dev);
 		}
 #endif
