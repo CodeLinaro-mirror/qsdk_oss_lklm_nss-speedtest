@@ -218,6 +218,58 @@ static int nss_tcp_st_cli_log_cfg(struct netfn_tcpst_cfg *st_cfg, bool time_base
 }
 
 /*
+ * nss_tcp_st_cli_get_file_size()
+ *	Send HTTP HEAD request to retrieve the file size for HTTP download.
+ *
+ * @host[in] Server IP address string
+ * @port[in] Server port in host byte order
+ * @file_name[in] File path to query
+ *
+ * @return
+ * File size in bytes on success, -1 if HEAD request fails or Content-Length is absent
+ */
+static int64_t nss_tcp_st_cli_get_file_size(char *host, uint16_t port, char *file_name)
+{
+	curl_off_t cl = -1;
+	char url[256];
+	CURLcode res;
+	int url_len;
+	CURL *curl;
+
+	curl = curl_easy_init();
+	if (!curl) {
+		nss_tcp_st_log_error("Failed to init curl\n");
+		return -1;
+	}
+
+	/*
+	 * Check snprintf return value to avoid truncated value
+	 */
+	url_len = snprintf(url, sizeof(url), "http://%s:%u/%s", host, port, file_name);
+	if (url_len < 0 || url_len >= (int)sizeof(url)) {
+		nss_tcp_st_log_error("URL construction failed or truncated\n");
+		curl_easy_cleanup(curl);
+		return -1;
+	}
+
+	curl_easy_setopt(curl, CURLOPT_URL, url);
+	curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
+	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+
+	res = curl_easy_perform(curl);
+	if (res != CURLE_OK) {
+		nss_tcp_st_log_warn("Failed to Get Test Filesize (%s)\n", file_name);
+		curl_easy_cleanup(curl);
+		return -1;
+	}
+
+	curl_easy_getinfo(curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &cl);
+	nss_tcp_st_log_info("File size for %s: %lld bytes\n", file_name, (long long)cl);
+	curl_easy_cleanup(curl);
+	return (cl > 0) ? (int64_t)cl : -1;
+}
+
+/*
  * nss_tcp_st_cli_get_src_dev()
  *	Resolve interface name from local source IP
  */
@@ -518,6 +570,14 @@ static bool nss_tcp_st_cli_start(int args, char **argv)
 	}
 
 	if (http) {
+		if ((st_cfg.test == NETFN_TCPST_TEST_HTTP_DOWNLOAD) && !file_size) {
+			file_size = nss_tcp_st_cli_get_file_size(ip, ntohs(st_cfg.remote.port), file_name);
+			if (file_size < 0) {
+				nss_tcp_st_log_error("%px: Failed to get Download Test file size from HTTP server\n", argv);
+				return false;
+			}
+		}
+
 		st_cfg.http.file_sz = file_size;
 
 		if (!host) {
@@ -529,10 +589,9 @@ static bool nss_tcp_st_cli_start(int args, char **argv)
 			nss_tcp_st_log_error("%px:Failed to parse http header\n", argv);
 			return false;
 		}
-	} else {
-		st_cfg.raw.max_bytes = file_size;
 	}
 
+	st_cfg.raw.max_bytes = file_size;
 	st_cfg.buf_len = !st_cfg.buf_len ? NETFN_TCPST_BUF_LEN : st_cfg.buf_len;
 
 	error = nss_tcp_st_cli_log_cfg(&st_cfg, time_based);
