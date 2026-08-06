@@ -604,6 +604,49 @@ static bool nss_tcp_st_cli_start(int args, char **argv)
 }
 
 /*
+ * nss_tcp_st_cli_show_per_conn_stats
+ * 	Print Per connection stats to stdout and log file
+ */
+static void nss_tcp_st_cli_show_per_conn_stats(struct netfn_tcpst_result *res, FILE *fp)
+{
+	uint8_t i;
+
+	for (i = 0; i < res->num_active_conn; i++) {
+		struct netfn_tcpst_stats *s = &res->conn_stats[i];
+
+		nss_tcp_st_log_info("Connection [%u]:\n", i);
+		fprintf(fp, "Connection [%u]:\n", i);
+
+		nss_tcp_st_log_info("  TCPOpenRequestTime\t: %"PRIu64" ns\n", s->tcp_open.request_time);
+		fprintf(fp, "  TCPOpenRequestTime\t: %"PRIu64" ns\n", s->tcp_open.request_time);
+
+		nss_tcp_st_log_info("  TCPOpenResponseTime\t: %"PRIu64" ns\n", s->tcp_open.response_time);
+		fprintf(fp, "  TCPOpenResponseTime\t: %"PRIu64" ns\n", s->tcp_open.response_time);
+
+		nss_tcp_st_log_info("  ROMTime\t\t: %"PRIu64" ns\n", s->test.rom_time);
+		fprintf(fp, "  ROMTime\t\t: %"PRIu64" ns\n", s->test.rom_time);
+
+		nss_tcp_st_log_info("  BOMTime\t\t: %"PRIu64" ns\n", s->test.bom_time);
+		fprintf(fp, "  BOMTime\t\t: %"PRIu64" ns\n", s->test.bom_time);
+
+		nss_tcp_st_log_info("  EOMTime\t\t: %"PRIu64" ns\n", s->test.eom_time);
+		fprintf(fp, "  EOMTime\t\t: %"PRIu64" ns\n", s->test.eom_time);
+
+		nss_tcp_st_log_info("  TestBytesSent\t\t: %"PRIu64" bytes\n", s->test_bytes.sent);
+		fprintf(fp, "  TestBytesSent\t\t: %"PRIu64" bytes\n", s->test_bytes.sent);
+
+		nss_tcp_st_log_info("  TestBytesReceived\t: %"PRIu64" bytes\n", s->test_bytes.rcvd);
+		fprintf(fp, "  TestBytesReceived\t: %"PRIu64" bytes\n", s->test_bytes.rcvd);
+
+		nss_tcp_st_log_info("  EthBytesSent\t\t: %"PRIu64" bytes\n", s->eth_bytes.sent);
+		fprintf(fp, "  EthBytesSent\t\t: %"PRIu64" bytes\n", s->eth_bytes.sent);
+
+		nss_tcp_st_log_info("  EthBytesReceived\t: %"PRIu64" bytes\n", s->eth_bytes.rcvd);
+		fprintf(fp, "  EthBytesReceived\t: %"PRIu64" bytes\n", s->eth_bytes.rcvd);
+	}
+}
+
+/*
  * nss_tcp_st_cli_show_stats
  *	Print tcpst stats
  */
@@ -717,6 +760,16 @@ void nss_tcp_st_cli_completion(void *app_data, struct netfn_tcpst_result *res)
 	nss_tcp_st_log_info("******************PERF METRICS****************:\n\n");
 
 	fprintf(fp, "******************PERF METRICS****************:\n\n");
+
+	nss_tcp_st_log_info("******************Per Flow Statistics (%u Flow) ******************:\n", res->num_active_conn);
+
+	fprintf(fp, "******************Per Flow Statistics (%u Flow) ******************:\n", res->num_active_conn);
+
+	nss_tcp_st_cli_show_per_conn_stats(res, fp);
+
+	nss_tcp_st_log_info("******************Per Flow Statistics******************:\n\n");
+
+	fprintf(fp, "******************Per Flow Statistics******************:\n\n");
 
 	if (res->state == NETFN_TCPST_STATE_COMPLETED) {
 		nss_tcp_st_log_info("...Test executed successfully...\n");
