@@ -154,8 +154,14 @@ static bool nss_udp_st_rx_rfs_exception_rule_create(struct nss_udp_st_rules *rul
 {
 	struct ppe_rfs_ipv4_rule_create_msg pr4rc = {0};
 	struct ppe_rfs_ipv6_rule_create_msg pr6rc = {0};
-	struct net_device *dev = ppe_vp_get_netdev_by_port_num(nust.dummy_vp_num);
+	struct net_device *dev;
 
+	if (!is_dummy_vp_exists) {
+		udp_st_err("dummy vp is not created");
+		return false;
+	}
+
+	dev = ppe_vp_get_netdev_by_port_num(nust.dummy_vp_num);
 	if(!dev) {
 		udp_st_err("dev is null");
 		return false;
