@@ -340,6 +340,13 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 			return -EINVAL;
 		}
 
+#ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
+		if ((nust.config.flags & NSS_UDP_ST_FLAGS_HW_OFFLOAD) && nust.config.cpu_bitmap) {
+			pr_err("UDP-ST: cpu_bitmap is not supported with hardware offload\n");
+			return -EINVAL;
+		}
+#endif
+
 		if (!nss_udp_st_init_validate_rate()) {
 			udp_st_err("Configured rate %u Mbps exceeds max bandwidth of interface %s\n",
 				    nust.config.rate, nust.config.net_dev);
@@ -421,6 +428,15 @@ static long nss_udp_st_ioctl(struct file *file, unsigned int ioctl_num,
 		if (ret) {
 			return -EINVAL;
 		}
+
+#ifdef NSS_UDP_ST_DRV_HW_OFFLOAD_ENABLE
+		if ((nust.config.flags & NSS_UDP_ST_FLAGS_HW_OFFLOAD) && nust.time) {
+			pr_err("UDP-ST: time duration is not supported with hardware offload\n");
+			pr_err("UDP-ST: HW offload Tx test can be stopped using \"nss-udp-st --mode stop\"\n");
+			return -EINVAL;
+		}
+#endif
+
 		if (!nust.time) {
 			nust.time = NSS_UDP_ST_TX_DEFAULT_TIMEOUT;
 		}
