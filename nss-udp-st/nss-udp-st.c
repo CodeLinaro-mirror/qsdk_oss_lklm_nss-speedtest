@@ -388,7 +388,7 @@ static int nss_udp_st_stats(void)
 		st_stat.errors[NSS_UDP_ST_ERROR_INCORRECT_IP_VERSION]);
 
 	fprintf(fp, "\nThroughput Stats\n");
-	fprintf(fp, "\tthroughput  = %lld Mbps\n",
+	fprintf(fp, "\taverage throughput  = %lld Mbps\n",
 		(bytes * 8)/(st_stat.timer_stats[NSS_UDP_ST_STATS_TIME_ELAPSED] * 1000));
 
 	if (st_cfg.type == NSS_UDP_ST_RX) {
@@ -427,6 +427,43 @@ static void nss_udp_st_usage(void)
 	printf("\n./nss_udp_st --mode <reset_stats>");
 	printf("\n./nss_udp_st --mode <rate_change> --rate <rate in Mbps>");
 	printf("\n./nss_udp_st --mode <list/clear/final>");
+}
+
+/*
+ * nss_udp_st_parse_uint32()
+ *	Parse str into *value, rejecting empty, negative or non-numeric input
+ */
+static bool nss_udp_st_parse_uint32(const char *str, uint32_t *value)
+{
+	unsigned long val;
+	char *endptr;
+
+	if (!str || *str == '\0' || str[0] == '-') {
+		return false;
+	}
+
+	val = strtoul(str, &endptr, 10);
+	if (*endptr != '\0' || val > UINT32_MAX) {
+		return false;
+	}
+
+	*value = (uint32_t)val;
+	return true;
+}
+
+/*
+ * nss_udp_st_max_cpu_bitmap()
+ *	Return the max cpu_bitmap value allowed as per number of cores
+ */
+static uint32_t nss_udp_st_max_cpu_bitmap(void)
+{
+	long ncpus = sysconf(_SC_NPROCESSORS_ONLN);
+
+	if (ncpus <= 0) {
+		ncpus = 1;
+	}
+
+	return (uint32_t)((1UL << ncpus) - 1);
 }
 
 /*
@@ -539,7 +576,10 @@ static int nss_udp_st_get_opt(int args, char **argv)
 			break;
 
 		case 'b':
-			st_param.buffer_sz = atoi(optarg);
+			if (!nss_udp_st_parse_uint32(optarg, &st_param.buffer_sz)) {
+				printf("Invalid buffer size %s\n", optarg);
+				return -EINVAL;
+			}
 			break;
 
 		case 'c':
@@ -562,9 +602,20 @@ static int nss_udp_st_get_opt(int args, char **argv)
 			nss_udp_st_usage();
 			break;
 
-		case 'u':
-			st_param.cpu_bitmap = atoi(optarg);
+		case 'u': {
+			uint32_t max_bitmap = nss_udp_st_max_cpu_bitmap();
+
+			if (!nss_udp_st_parse_uint32(optarg, &st_param.cpu_bitmap)) {
+				printf("Invalid cpu bitmap %s\n", optarg);
+				return -EINVAL;
+			}
+
+			if (st_param.cpu_bitmap > max_bitmap) {
+				printf("Invalid cpu bitmap %u. Max allowed: %u\n", st_param.cpu_bitmap, max_bitmap);
+				return -EINVAL;
+			}
 			break;
+		}
 
 		case 'g':
 			st_param.burst_size = atoi(optarg);
