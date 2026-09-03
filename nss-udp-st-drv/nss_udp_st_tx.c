@@ -747,6 +747,12 @@ static bool nss_udp_st_tun_setup(struct nss_udp_st_rules *rule)
 	memcpy(&l2->dmac, rule->dst_mac, ETH_ALEN);
 	l2->xmit_port = port_num;
 
+	if (is_vlan_dev(nust_dev)) {
+		l2->vlan[0].tpid = ntohs(vlan_dev_vlan_proto(nust_dev));
+		l2->vlan[0].tci = vlan_dev_vlan_id(nust_dev);
+		l2->flags |= PPE_DRV_TUN_CMN_CTX_L2_CVLAN_VALID;
+	}
+
 	/*
 	 * populate ipv4 or ipv6  header
 	 */
@@ -1175,7 +1181,7 @@ static void nss_udp_st_tx_wq_cb(struct work_struct *usw)
 	dev_hold(xmit_dev);
 	if (!tx_timer_flag[cpu]) {
 		nss_udp_st_hrtimer_init(&tx_hr_timer[cpu], cpu);
-		hrtimer_start(&tx_hr_timer[cpu], kt, HRTIMER_MODE_ABS_HARD);
+		hrtimer_start(&tx_hr_timer[cpu], kt, HRTIMER_MODE_ABS_PINNED_HARD);
 		tx_timer_flag[cpu] = 1;
 	} else {
 		hrtimer_restart(&tx_hr_timer[cpu]);
@@ -1413,10 +1419,6 @@ bool nss_udp_st_tx(void)
 		}
 
 		if (is_vlan_dev(nust_dev)) {
-			if (nust.config.flags & NSS_UDP_ST_FLAGS_VP) {
-				udp_st_err("VLAN + VP speedtest is not supported\n");
-				return false;
-			}
 			if (nss_udp_st_vlan_iface_config(nust_dev) < 0) {
 				udp_st_err("Could not configure vlan, dev: %s\n", nust_dev->name);
 				return false;
