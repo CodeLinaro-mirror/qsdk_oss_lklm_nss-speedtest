@@ -481,6 +481,16 @@ bool nss_udp_st_rx_rfs_rule_create() {
         int channel_count;
         int channel_protocol;
 
+	/*
+	 * HW offload creates the PPE flow explicitly via nss_udp_st_ppe_create_flows().
+	 * Pushing an RFS rule for the same 5-tuple here would race with that path and
+	 * collide in the PPE flow table, so skip RFS entirely for the offload case.
+	 */
+	if (nust.config.flags & NSS_UDP_ST_FLAGS_HW_OFFLOAD) {
+		udp_st_trace("HW offload enabled, skipping RFS rule creation\n");
+		return true;
+	}
+
 	if (!is_dummy_vp_exists) {
 		udp_st_err("dummy vp is not created");
 		return false;
