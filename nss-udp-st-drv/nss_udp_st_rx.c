@@ -278,6 +278,7 @@ void nss_udp_st_rx_receive_skb(struct sk_buff *skb)
 		}
 	}
 	spin_unlock_bh(&pre_routing_hook_list_lock);
+	kfree_skb(skb);
 	return;
 }
 

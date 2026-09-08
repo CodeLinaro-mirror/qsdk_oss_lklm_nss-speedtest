@@ -219,6 +219,11 @@ static void nss_udp_st_tx_packets_vp(struct net_device *ndev, struct nss_udp_st_
 	struct iphdr *iph;
 	struct ipv6hdr *ipv6h;
 
+	if (!rules->tun_dev) {
+		udp_st_err("tun_dev is NULL for rule_id=%u, skipping\n", rules->rule_id);
+		return;
+	}
+
 	pkt_sz = nust.config.buffer_sz;
 	skb_sz = NSS_UDP_ST_MIN_HEADROOM + pkt_sz + sizeof(struct ethhdr) + NSS_UDP_ST_MIN_TAILROOM + SMP_CACHE_BYTES;
 
