@@ -151,7 +151,7 @@ static int nss_tcp_st_cli_set_http_header(struct netfn_tcpst_cfg *st_cfg, char *
 	} else {
 		ret = snprintf(st_cfg->http.hdr, NETFN_TCPST_HTTP_HDR_MAX, "PUT /%s HTTP/1.1\r\n"
 				"Host: %s:%u\r\n"
-				"Content-Length: %zu\r\n"
+				"Content-Length: %" PRIu64 "\r\n"
 				"Content-Type: %s\r\n\r\n",
 				file_name, ip, ntohs(st_cfg->remote.port), st_cfg->http.file_sz, content_type);
 
@@ -230,7 +230,7 @@ static int nss_tcp_st_cli_get_src_dev(struct netfn_tcpst_cfg *st_cfg)
 	if (!st_cfg->local.ip_version)
 		return 0;
 
-	err = getifaddrs(&ifaddr); 
+	err = getifaddrs(&ifaddr);
 	if (err < 0) {
 		nss_tcp_st_log_error("%px: Failed tofind egress I/F\n", st_cfg);
 		return err;
@@ -302,7 +302,7 @@ static bool nss_tcp_st_cli_start(int args, char **argv)
 	struct netfn_tcpst_cfg st_cfg;
 	char ip[INET6_ADDRSTRLEN];
 	bool time_based = false;
-	size_t file_size = 0;
+	uint64_t file_size = 0;
 	bool http = false;
 
 	memset(&st_cfg, 0, sizeof(st_cfg));
