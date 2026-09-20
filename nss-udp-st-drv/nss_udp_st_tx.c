@@ -512,6 +512,13 @@ static void nss_udp_st_tx_packets(struct net_device *ndev, struct nss_udp_st_rul
 	 */
 	skb->dev = xmit_dev;
 	skb_set_queue_mapping(skb, cpu);
+
+	/*
+	 * Force fast_xmit to check its effect on TX-completion
+	 * recycler batching.
+	 */
+	skb->fast_xmit = 1;
+
 	if (xmit_dev->netdev_ops->ndo_start_xmit(skb, xmit_dev) != NETDEV_TX_OK) {
 		kfree_skb(skb);
 		atomic64_inc(&nust.stats.errors[NSS_UDP_ST_ERROR_PACKET_DROP]);
