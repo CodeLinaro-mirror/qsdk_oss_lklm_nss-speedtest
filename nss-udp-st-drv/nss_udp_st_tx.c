@@ -358,9 +358,17 @@ static void nss_udp_st_tx_packets_ppe_vp(struct net_device *ndev, struct nss_udp
 		vhdr->h_vlan_encapsulated_proto = skb->protocol;
 		skb->protocol = htons(ETH_P_8021Q);
 		pr_debug("UDP-ST: Added VLAN header with VID %u to SKB\n", rules->bridge_vlan_id);
-	}
 
-	nss_udp_st_generate_eth_hdr(skb, (const uint8_t *)rules->dst_mac, (uint8_t *)nss_udp_st_ppe_vp_dev_get()->dev_addr);
+		/*
+		 * For SFU, the VP netdevice MAC is a dummy value, so use the mac
+		 * address resolved for the source IP as the eth dest instead.
+		 */
+		pr_info("UDP-ST VP: SFU eth hdr src_mac=%pM dst_mac=%pM\n", rules->src_mac, rules->dst_mac);
+		nss_udp_st_generate_eth_hdr(skb, (const uint8_t *)rules->src_mac, (uint8_t *)rules->dst_mac);
+	} else {
+		pr_info("UDP-ST VP: eth hdr src_mac=%pM dst_mac=%pM\n", rules->dst_mac, nss_udp_st_ppe_vp_dev_get()->dev_addr);
+		nss_udp_st_generate_eth_hdr(skb, (const uint8_t *)rules->dst_mac, (uint8_t *)nss_udp_st_ppe_vp_dev_get()->dev_addr);
+	}
 
 	/*
 	 * Set skb->dev to the VP netdevice

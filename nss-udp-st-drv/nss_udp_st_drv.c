@@ -77,11 +77,23 @@ static int nss_udp_st_check_rules(struct nss_udp_st_rules *rules)
 			udp_st_err("Error in Updating the Return MAC Address\n");
 			return -EINVAL;
 		}
+
+		if (nss_udp_st_get_local_macaddr_ipv4(rules->sip.ip.ipv4, (uint8_t *)&rules->src_mac)) {
+			udp_st_err("Error in Updating the Source MAC Address\n");
+			return -EINVAL;
+		}
+		pr_info("UDP-ST: resolved src_mac=%pM for sip=%pI4\n", rules->src_mac, &rules->sip.ip.ipv4);
 	} else if (rules->ip_version == NSS_UDP_ST_FLAG_IPV6) {
 		if (nss_udp_st_get_macaddr_ipv6(rules->dip.ip.ipv6, (uint8_t *)&rules->dst_mac)) {
 			udp_st_err("Error in Updating the Return MAC Address\n");
 			return -EINVAL;
 		}
+
+		if (nss_udp_st_get_local_macaddr_ipv6(rules->sip.ip.ipv6, (uint8_t *)&rules->src_mac)) {
+			udp_st_err("Error in Updating the Source MAC Address\n");
+			return -EINVAL;
+		}
+		pr_info("UDP-ST: resolved src_mac=%pM for sip=%pI6\n", rules->src_mac, rules->sip.ip.ipv6);
 	} else {
 		udp_st_err("invalid ip version flag\n");
 		return -EINVAL;

@@ -20,6 +20,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/etherdevice.h>
+#include <linux/inetdevice.h>
 #include <net/sock.h>
 #include <net/arp.h>
 #include <net/dst.h>
@@ -27,6 +28,7 @@
 #include <net/ip.h>
 #include <net/route.h>
 #include <net/ip6_route.h>
+#include <net/addrconf.h>
 #include "nss_udp_st_ip.h"
 #include "nss_udp_st_public.h"
 
@@ -288,9 +290,54 @@ int nss_udp_st_get_macaddr_ipv6(uint32_t ip_addr[4], uint8_t mac_addr[])
 	ether_addr_copy(mac_addr, neigh->ha);
 	neigh_release(neigh);
 	return 0;
+
 fail:
 	neigh_release(neigh);
 	return -ENODEV;
+}
+
+/*
+ * nss_udp_st_get_local_macaddr_ipv4()
+ *	Return the MAC address of the local netdevice that owns the given IPv4 address.
+ */
+int nss_udp_st_get_local_macaddr_ipv4(uint32_t ip_addr, uint8_t mac_addr[])
+{
+	struct net_device *dev;
+	__be32 addr = htonl(ip_addr);
+
+	dev = ip_dev_find(&init_net, addr);
+	if (!dev) {
+		udp_st_err("no local netdevice owns IP:0x%x\n", ip_addr);
+		return -ENODEV;
+	}
+
+	ether_addr_copy(mac_addr, dev->dev_addr);
+	dev_put(dev);
+	return 0;
+}
+
+/*
+ * nss_udp_st_get_local_macaddr_ipv6()
+ *	Return the MAC address of the local netdevice that owns the given IPv6 address.
+ */
+int nss_udp_st_get_local_macaddr_ipv6(uint32_t ip_addr[4], uint8_t mac_addr[])
+{
+	struct net_device *dev;
+	struct in6_addr addr;
+
+	nss_udp_st_get_ipv6_addr_hton(ip_addr, addr.s6_addr32);
+
+	rcu_read_lock();
+	dev = ipv6_dev_find(&init_net, &addr, NULL);
+	if (!dev) {
+		rcu_read_unlock();
+		udp_st_err("no local netdevice owns IP:%pI6c\n", addr.s6_addr32);
+		return -ENODEV;
+	}
+
+	ether_addr_copy(mac_addr, dev->dev_addr);
+	rcu_read_unlock();
+	return 0;
 }
 
 /*

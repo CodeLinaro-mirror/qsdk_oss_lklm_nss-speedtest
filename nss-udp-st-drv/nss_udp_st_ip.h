@@ -39,6 +39,10 @@ int nss_udp_st_get_macaddr_ipv4(uint32_t ip_addr, uint8_t mac_addr[]);
 
 int nss_udp_st_get_macaddr_ipv6(uint32_t ip_addr[4], uint8_t mac_addr[]);
 
+int nss_udp_st_get_local_macaddr_ipv4(uint32_t ip_addr, uint8_t mac_addr[]);
+
+int nss_udp_st_get_local_macaddr_ipv6(uint32_t ip_addr[4], uint8_t mac_addr[]);
+
 bool nss_udp_st_compare_ipv6(uint32_t src[4], uint32_t dst[4]);
 
 /*

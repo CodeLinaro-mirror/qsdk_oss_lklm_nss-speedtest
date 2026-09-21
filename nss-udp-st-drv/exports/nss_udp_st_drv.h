@@ -221,6 +221,7 @@ struct nss_udp_st_rules {
 	uint16_t dport;			/* dest port */
 	uint8_t ip_version;		/* version of IP address */
 	uint8_t dst_mac[ETH_ALEN];	/* dest mac */
+	uint8_t src_mac[ETH_ALEN];	/* source mac */
 	uint64_t seq;			/* sequence counter */
 	uint64_t seq_greatest;		/* greatest pkt recieved */
 	uint8_t cpu;			/* CPU that this connection runs */
