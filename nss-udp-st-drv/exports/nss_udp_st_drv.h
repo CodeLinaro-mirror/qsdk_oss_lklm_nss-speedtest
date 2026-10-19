@@ -47,6 +47,7 @@ extern struct nss_udp_st nust;
 extern struct delayed_work nss_udp_st_tx_delayed_work;
 extern struct workqueue_struct *work_queue;
 extern void nss_udp_st_update_stats(size_t pkt_size, int64_t num_pkts);
+extern void nss_udp_st_update_hw_offload_stats(int64_t num_pkts, int64_t num_bytes);
 extern uint64_t nss_udp_st_tx_num_pkt;
 extern struct net_device *nust_dev;
 extern struct nss_udp_st_rules *exception_dport_rules;
@@ -230,9 +231,10 @@ struct nss_udp_st_rules {
 	struct net_device *ppe_dev;	/* Device used for ppe vp */
 	void *policer_ctx;		/* Per-flow policer context */
 	uint32_t policer_rule_id;	/* Per-flow policer rule ID */
-	uint64_t policer_prev_rpc;	/* Previous cumulative red-packet count for delta calculation */
 	uint16_t bridge_vlan_id;	/* VLAN ID if bridge port is a VLAN device (0 if not VLAN) */
 	uint32_t rule_id;		/* rule id of the rule */
+	void *ppe_conn;			/* PPE connection pointer for HW offload stats reads */
+	bool ppe_conn_valid;		/* Flag for PPE connection instance */
 };
 
 /*
