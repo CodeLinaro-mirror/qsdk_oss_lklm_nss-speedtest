@@ -946,7 +946,7 @@ static int nss_udp_st_ppe_create_flow_v4(struct nss_udp_st_rules *rule, nss_udp_
 		 * Check if VEIP is enabled and adjust interface assignments
 		 */
 		if (ppe_drv_veip_is_enabled(wan_dev)) {
-			create->top_rule.tx_if = phy_iface_idx;
+			create->top_rule.tx_if = wan_iface_idx;
 			create->conn_rule.tx_if = wan_iface_idx;
 		}
 #endif
@@ -1013,6 +1013,16 @@ static int nss_udp_st_ppe_create_flow_v4(struct nss_udp_st_rules *rule, nss_udp_
 
 		create->top_rule.rx_if = wan_iface_idx;
 		create->top_rule.tx_if = vp_iface_idx;
+
+#ifdef NSS_UDP_ST_HGU
+		/*
+		 * Check if VEIP is enabled and adjust interface assignments
+		 */
+		if (ppe_drv_veip_is_enabled(wan_dev)) {
+			create->top_rule.rx_if = wan_iface_idx;
+			create->conn_rule.rx_if = wan_iface_idx;
+		}
+#endif
 
 		/*
 		 * Bridge case
@@ -1256,7 +1266,7 @@ static int nss_udp_st_ppe_create_flow_v6(struct nss_udp_st_rules *rule, nss_udp_
 		 * Check if VEIP is enabled and adjust interface assignments
 		 */
 		if (ppe_drv_veip_is_enabled(wan_dev)) {
-			create->top_rule.tx_if = phy_iface_idx;
+			create->top_rule.tx_if = wan_iface_idx;
 			create->conn_rule.tx_if = wan_iface_idx;
 		}
 #endif
@@ -1298,6 +1308,16 @@ static int nss_udp_st_ppe_create_flow_v6(struct nss_udp_st_rules *rule, nss_udp_
 
 		create->top_rule.rx_if = wan_iface_idx;
 		create->top_rule.tx_if = vp_iface_idx;
+
+#ifdef NSS_UDP_ST_HGU
+		/*
+		 * Check if VEIP is enabled and adjust interface assignments
+		 */
+		if (ppe_drv_veip_is_enabled(wan_dev)) {
+			create->top_rule.rx_if = wan_iface_idx;
+			create->conn_rule.rx_if = wan_iface_idx;
+		}
+#endif
 
 		/*
 		 * Bridge case
